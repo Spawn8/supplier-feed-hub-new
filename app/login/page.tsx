@@ -1,8 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import { createBrowserClient } from '@supabase/ssr'
 import { useRouter } from 'next/navigation'
+import { createBrowserClient } from '@supabase/ssr'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -20,12 +20,13 @@ export default function LoginPage() {
     e.preventDefault()
     setError(null)
 
-    if (isLogin) {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
-      if (error) return setError(error.message)
-    } else {
-      const { error } = await supabase.auth.signUp({ email, password })
-      if (error) return setError(error.message)
+    const { error } = isLogin
+      ? await supabase.auth.signInWithPassword({ email, password })
+      : await supabase.auth.signUp({ email, password })
+
+    if (error) {
+      setError(error.message)
+      return
     }
 
     router.push('/')

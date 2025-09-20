@@ -3,7 +3,6 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 
 export async function middleware(req: NextRequest) {
-  // Forward request headers so auth cookies can be read
   const res = NextResponse.next({ request: { headers: req.headers } })
 
   const supabase = createServerClient(
@@ -11,22 +10,14 @@ export async function middleware(req: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) {
-          return req.cookies.get(name)?.value
-        },
-        set(name: string, value: string, options: any) {
-          res.cookies.set({ name, value, ...options })
-        },
-        remove(name: string, options: any) {
-          res.cookies.delete({ name, ...options })
-        },
+        get: (name: string) => req.cookies.get(name)?.value,
+        set: (name: string, value: string, options: any) => res.cookies.set({ name, value, ...options }),
+        remove: (name: string, options: any) => res.cookies.delete({ name, ...options }),
       },
-    }
+    },
   )
 
-  // Touch session to keep it fresh; this sets/refreshes cookies on res
   await supabase.auth.getUser()
-
   return res
 }
 

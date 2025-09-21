@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useActionState, useTransition } from 'react'
-import { updateSupplierAction } from '../(dashboard)/actions/supplierActions'
+import { updateSupplierAction, type UpdateSupplierState } from '@/app/(dashboard)/actions/supplierActions'
 
 type Supplier = {
   id: string
@@ -13,28 +13,37 @@ type Supplier = {
   auth_password: string | null
 }
 
+const initial: UpdateSupplierState = {}
+
 export default function SupplierEditModal({ supplier }: { supplier: Supplier }) {
   const [open, setOpen] = useState(false)
+
   const [name, setName] = useState(supplier.name)
   const [sourceType, setSourceType] = useState<'url' | 'upload'>(supplier.source_type)
-  const [endpointUrl, setEndpointUrl] = useState(supplier.endpoint_url ?? '')
-  const [schedule, setSchedule] = useState(supplier.schedule ?? '')
-  const [authUsername, setAuthUsername] = useState(supplier.auth_username ?? '')
-  const [authPassword, setAuthPassword] = useState(supplier.auth_password ?? '')
-  const [state, formAction] = useActionState(updateSupplierAction, {})
+  const [endpointUrl, setEndpointUrl] = useState(supplier.endpoint_url || '')
+  const [schedule, setSchedule] = useState(supplier.schedule || '')
+  const [authUsername, setAuthUsername] = useState(supplier.auth_username || '')
+  const [authPassword, setAuthPassword] = useState(supplier.auth_password || '')
+
+  const [state, formAction] = useActionState(updateSupplierAction, initial)
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
-    if ((state as any)?.ok) setOpen(false)
-  }, [state])
+    if (state?.ok) {
+      setOpen(false)
+    }
+  }, [state?.ok])
 
-  const valid = name.trim().length > 0 && (sourceType === 'upload' || endpointUrl.trim().length > 0)
+  const valid =
+    name.trim().length > 0 &&
+    ((sourceType === 'url' && endpointUrl.trim().length > 0) ||
+      sourceType === 'upload')
 
   return (
     <>
       <button
         onClick={() => setOpen(true)}
-        className="px-3 py-1.5 rounded border hover:bg-gray-50"
+        className="px-2 py-1 rounded border hover:bg-gray-50"
       >
         Edit
       </button>
@@ -48,21 +57,34 @@ export default function SupplierEditModal({ supplier }: { supplier: Supplier }) 
               action={(fd: FormData) => {
                 fd.set('id', supplier.id)
                 fd.set('source_type', sourceType)
+                fd.set('name', name.trim())
+                fd.set('endpoint_url', endpointUrl.trim())
+                fd.set('schedule', schedule.trim())
+                fd.set('auth_username', authUsername.trim())
+                fd.set('auth_password', authPassword.trim())
+
+                // Only include a file if user selected one
+                const maybeFile = (document.getElementById('edit-file-input-' + supplier.id) as HTMLInputElement | null)?.files?.[0]
+                if (maybeFile) {
+                  fd.set('file', maybeFile)
+                }
+
                 startTransition(() => formAction(fd))
               }}
-              className="grid gap-3"
+              className="grid gap-4"
             >
-              <div className="grid md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm text-gray-600">Name *</label>
+                  <label className="text-sm text-gray-600">Name</label>
                   <input
-                    name="name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className="border rounded-lg px-3 py-2 w-full"
+                    placeholder="Supplier name"
                     required
                   />
                 </div>
+
                 <div>
                   <label className="text-sm text-gray-600">Source Type</label>
                   <select
@@ -78,31 +100,42 @@ export default function SupplierEditModal({ supplier }: { supplier: Supplier }) 
 
               {sourceType === 'url' && (
                 <div>
-                  <label className="text-sm text-gray-600">Endpoint URL *</label>
+                  <label className="text-sm text-gray-600">Endpoint URL</label>
                   <input
-                    name="endpoint_url"
                     value={endpointUrl}
                     onChange={(e) => setEndpointUrl(e.target.value)}
                     className="border rounded-lg px-3 py-2 w-full"
-                    required
+                    placeholder="https://example.com/feed.xml"
                   />
                 </div>
               )}
 
-              <div className="grid md:grid-cols-3 gap-3">
+              {sourceType === 'upload' && (
+                <div>
+                  <label className="text-sm text-gray-600">Replace file (optional)</label>
+                  <input
+                    id={'edit-file-input-' + supplier.id}
+                    name="file"
+                    type="file"
+                    accept=".xml,.csv,.json,application/xml,text/csv,application/json"
+                    className="block w-full text-sm file:mr-3 file:px-4 file:py-2 file:rounded file:border file:bg-gray-50"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="text-sm text-gray-600">Schedule</label>
                   <input
-                    name="schedule"
                     value={schedule}
                     onChange={(e) => setSchedule(e.target.value)}
+                    placeholder="e.g. hourly | 0 3 * * *"
                     className="border rounded-lg px-3 py-2 w-full"
                   />
                 </div>
                 <div>
                   <label className="text-sm text-gray-600">Auth username</label>
                   <input
-                    name="auth_username"
                     value={authUsername}
                     onChange={(e) => setAuthUsername(e.target.value)}
                     className="border rounded-lg px-3 py-2 w-full"
@@ -111,7 +144,6 @@ export default function SupplierEditModal({ supplier }: { supplier: Supplier }) 
                 <div>
                   <label className="text-sm text-gray-600">Auth password</label>
                   <input
-                    name="auth_password"
                     type="password"
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
@@ -120,17 +152,21 @@ export default function SupplierEditModal({ supplier }: { supplier: Supplier }) 
                 </div>
               </div>
 
-              {(state as any)?.error && (
-                <div className="rounded border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
-                  {(state as any).error}
+              {state?.error && (
+                <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
+                  {state.error}
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 mt-4">
+              <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setOpen(false)} className="px-3 py-2 border rounded hover:bg-gray-100">
                   Cancel
                 </button>
-                <button type="submit" disabled={!valid || isPending} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-500 disabled:opacity-50">
+                <button
+                  type="submit"
+                  disabled={!valid || isPending}
+                  className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-500 disabled:opacity-50"
+                >
                   {isPending ? 'Saving…' : 'Save'}
                 </button>
               </div>

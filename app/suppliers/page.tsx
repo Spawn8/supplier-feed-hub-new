@@ -2,25 +2,28 @@
 import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
-import SupplierFormModal from './SupplierFormModal'
-import SupplierEditModal from './SupplierEditModal'
+import SupplierFormModal from '@/components/SupplierFormModal'
+import SupplierEditModal from '@/components/SupplierEditModal'
 import { deleteSupplierAction } from '../(dashboard)/actions/supplierActions'
 
 export default async function SuppliersPage() {
+  // ✅ FIX: Await the async client
   const supabase = await createSupabaseServerClient()
+
   const {
     data: { user },
   } = await supabase.auth.getUser()
 
   if (!user) {
     return (
-      <main className="p-8">
-        <div className="max-w-5xl mx-auto">
-          <p>Please log in.</p>
-          <Link href="/login" className="text-blue-600 underline">
-            Go to login
+      <main className="min-h-screen flex items-center justify-center">
+        <p>
+          Please{' '}
+          <Link className="text-blue-600 underline" href="/login">
+            log in
           </Link>
-        </div>
+          .
+        </p>
       </main>
     )
   }
@@ -28,14 +31,16 @@ export default async function SuppliersPage() {
   const wsId = await getCurrentWorkspaceId()
   if (!wsId) {
     return (
-      <main className="p-8">
-        <div className="max-w-5xl mx-auto space-y-3">
-          <h1 className="text-2xl font-semibold">Suppliers</h1>
-          <div className="rounded-2xl border p-6 bg-white">
-            <p className="text-gray-700">
-              Select or create a workspace first using the left sidebar.
-            </p>
-          </div>
+      <main className="min-h-screen flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <h1 className="text-2xl font-semibold">No workspace selected</h1>
+          <p className="text-gray-600">
+            Go to{' '}
+            <Link href="/workspaces" className="text-blue-600 underline">
+              Workspaces
+            </Link>{' '}
+            to create or select one.
+          </p>
         </div>
       </main>
     )
@@ -64,13 +69,11 @@ export default async function SuppliersPage() {
   return (
     <main className="p-8">
       <div className="max-w-6xl mx-auto space-y-6">
-        {/* Header */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold">Suppliers</h1>
           <SupplierFormModal />
         </div>
 
-        {/* Table/Card */}
         <div className="rounded-2xl border p-6 bg-white">
           <h2 className="text-xl font-semibold mb-3">Suppliers in this workspace</h2>
 
@@ -89,44 +92,23 @@ export default async function SuppliersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {suppliers.map((s) => (
-                    <tr key={s.id} className="border-b last:border-0 align-top">
-                      <td className="py-2 pr-3">
-                        {/* Link to details page (preview, mapping, etc.) */}
-                        <Link href={`/suppliers/${s.id}`} className="text-blue-600 underline">
-                          {s.name}
-                        </Link>
-                      </td>
-
+                  {suppliers?.map((s: any) => (
+                    <tr key={s.id} className="border-b last:border-b-0">
+                      <td className="py-2 pr-3">{s.name}</td>
                       <td className="py-2 pr-3">{s.source_type}</td>
-
-                      <td className="py-2 pr-3 break-all">
-                        {s.source_type === 'url'
-                          ? s.endpoint_url
-                          : s.source_path
-                          ? `storage://feeds/${s.source_path}`
-                          : '—'}
+                      <td className="py-2 pr-3">
+                        {s.source_type === 'url' ? s.endpoint_url : s.source_path || '—'}
                       </td>
-
                       <td className="py-2 pr-3">{s.schedule || '—'}</td>
-
                       <td className="py-2">
-                        <div className="flex flex-wrap gap-2">
-                          <SupplierEditModal
-                            supplier={{
-                              id: s.id,
-                              name: s.name,
-                              source_type: s.source_type,
-                              endpoint_url: s.endpoint_url,
-                              schedule: s.schedule,
-                              auth_username: s.auth_username,
-                              auth_password: s.auth_password,
-                            }}
-                          />
-
+                        <div className="flex items-center gap-2">
+                          <SupplierEditModal supplier={s} />
                           <form action={deleteSupplierAction}>
                             <input type="hidden" name="supplier_id" value={s.id} />
-                            <button className="px-3 py-1.5 rounded border text-red-600 hover:bg-red-50">
+                            <button
+                              className="px-2 py-1 rounded border hover:bg-gray-50"
+                              aria-label="Delete supplier"
+                            >
                               Delete
                             </button>
                           </form>

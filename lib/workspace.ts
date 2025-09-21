@@ -11,47 +11,8 @@ export async function getCurrentWorkspaceId(): Promise<string | null> {
 }
 
 /**
- * Make sure the current user has at least one workspace.
- * If none exists, create "My Workspace" and add them as owner.
- * Returns the workspace ID or null if user not authenticated.
- */
-export async function ensureWorkspace(): Promise<string | null> {
-  const supabase = await createSupabaseServerClient()
-  const { data: auth } = await supabase.auth.getUser()
-  const user = auth.user
-  if (!user) return null
-
-  // Try to find any visible workspace (member OR creator per policies)
-  const { data: existing } = await supabase
-    .from('workspaces')
-    .select('id')
-    .limit(1)
-
-  if (existing && existing.length > 0) {
-    return existing[0].id
-  }
-
-  // Create a default workspace
-  const { data: ws } = await supabase
-    .from('workspaces')
-    .insert({ name: 'My Workspace', created_by: user.id })
-    .select('id')
-    .single()
-
-  // If insert failed for any reason, just bail gracefully
-  if (!ws) return null
-
-  // Add the current user as owner (first membership)
-  await supabase
-    .from('workspace_members')
-    .insert({ workspace_id: ws.id, user_id: user.id, role: 'owner' })
-
-  return ws.id
-}
-
-/**
- * Only call this from Server Actions / Route Handlers!
- * Server components are not allowed to set cookies.
+ * Set/clear the active workspace cookie (server-side).
+ * httpOnly=false so client components (e.g., sidebar) can also read it if needed.
  */
 export async function setCurrentWorkspaceId(id: string) {
   const c = await cookies()
@@ -60,9 +21,54 @@ export async function setCurrentWorkspaceId(id: string) {
     value: id,
     httpOnly: false,
     sameSite: 'lax',
-    maxAge: 60 * 60 * 24 * 30, // 30 days
+    maxAge: id ? 60 * 60 * 24 * 30 : 0,
     path: '/',
   })
+}
+
+/**
+ * Ensure we have a valid active workspace for the logged-in user.
+ * - If the cookie points to a workspace the user no longer belongs to,
+ *   it picks the first available membership and sets that.
+ * - If none found, clears the cookie and returns null.
+ * Use this at the top of server pages that require a workspace (e.g., dashboard).
+ */
+export async function ensureActiveWorkspace(): Promise<string | null> {
+  const supabase = await createSupabaseServerClient()
+  const { data: auth } = await supabase.auth.getUser()
+  const user = auth.user
+  if (!user) return null
+
+  const current = await getCurrentWorkspaceId()
+  if (current) {
+    const { data: mem } = await supabase
+      .from('workspace_members')
+      .select('workspace_id')
+      .eq('workspace_id', current)
+      .eq('user_id', user.id)
+      .limit(1)
+
+    if (mem && mem.length > 0) {
+      return current
+    }
+  }
+
+  // Pick another workspace the user belongs to
+  const { data: others } = await supabase
+    .from('workspace_members')
+    .select('workspace_id')
+    .eq('user_id', user.id)
+    .limit(1)
+
+  if (others && others.length > 0) {
+    const next = others[0].workspace_id as string
+    await setCurrentWorkspaceId(next)
+    return next
+  }
+
+  // None left
+  await setCurrentWorkspaceId('')
+  return null
 }
 
 /**
@@ -73,6 +79,5 @@ export async function getMyWorkspaces() {
   const { data } = await supabase
     .from('workspaces')
     .select('id, name, created_at')
-  // No need to throw on empty/undefined; return an array
   return data || []
 }

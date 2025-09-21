@@ -3,11 +3,12 @@
 import { useRouter, usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import WorkspaceFormModal from '@/components/WorkspaceFormModal'
 
 export default function Sidebar({
   logo,
   workspaces,
-  activeWsId
+  activeWsId,
 }: {
   logo: string
   workspaces: { id: string; name: string }[]
@@ -15,89 +16,82 @@ export default function Sidebar({
 }) {
   const router = useRouter()
   const pathname = usePathname()
-  const [ws, setWs] = useState(activeWsId ?? '')
+  const [ws, setWs] = useState<string | null>(activeWsId ?? null)
 
-  // Keep local state in sync if server-side active changes (e.g., after refresh)
   useEffect(() => {
-    setWs(activeWsId ?? '')
+    setWs(activeWsId ?? null)
   }, [activeWsId])
 
-  async function handleSwitch(id: string) {
-    setWs(id)
-    await fetch('/api/switch-workspace', {
+  async function switchWorkspace(id: string) {
+    const res = await fetch('/api/switch-workspace', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspace_id: id }),
-      headers: { 'Content-Type': 'application/json' }
     })
-    router.refresh()
-  }
-
-  const [open, setOpen] = useState(false)
-  const [newWs, setNewWs] = useState('')
-
-  async function createWorkspace(e: React.FormEvent) {
-    e.preventDefault()
-    const fd = new FormData()
-    fd.set('name', newWs)
-    const res = await fetch('/api/create-workspace', { method: 'POST', body: fd })
-    const j = await res.json().catch(() => ({}))
-    setOpen(false)
-    setNewWs('')
-
-    // The route sets the cookie; update local state so the dropdown reflects it immediately
-    if (j?.id) {
-      setWs(j.id)
-    }
+    if (!res.ok) return
+    setWs(id)
     router.refresh()
   }
 
   const nav = [
     { href: '/', label: 'Dashboard' },
     { href: '/suppliers', label: 'Suppliers' },
-    { href: '/workspaces', label: 'Workspaces' }
+    { href: '/workspaces', label: 'Workspaces' },
   ]
 
   return (
-    <aside className="w-64 bg-gray-900 text-gray-100 flex flex-col min-h-screen">
-      <div className="h-16 flex items-center justify-center border-b border-gray-800">
-        <img src={logo} alt="Logo" className="h-8" />
-      </div>
-
+    <aside className="w-64 bg-gray-900 text-gray-100 min-h-screen flex flex-col">
       <div className="p-4 border-b border-gray-800">
-        <label className="text-xs text-gray-400 mb-1 block">Workspace</label>
-        <select
-          value={ws}
-          onChange={(e) => handleSwitch(e.target.value)}
-          className="w-full bg-gray-800 text-gray-100 rounded px-2 py-1 text-sm"
-        >
-          {/* Placeholder when no active workspace yet */}
-          {(!ws || ws === '') && <option value="">— Select workspace —</option>}
-          {workspaces.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <img src={logo} alt="logo" className="h-6 w-6" />
+          <span className="font-semibold">Supplier Feed Hub</span>
+        </div>
 
-        <button
-          onClick={() => setOpen(true)}
-          className="mt-3 w-full text-sm bg-blue-600 hover:bg-blue-500 rounded px-3 py-1.5"
-        >
-          + New Workspace
-        </button>
+        <div className="mt-4">
+          <label className="block text-xs text-gray-400">Workspace</label>
+          <select
+            className="mt-1 w-full bg-gray-800 text-gray-100 border border-gray-700 rounded px-2 py-1"
+            value={ws ?? ''}
+            onChange={(e) => {
+              const id = e.target.value
+              if (id) switchWorkspace(id)
+            }}
+          >
+            <option value="" disabled>
+              Select workspace…
+            </option>
+            {workspaces?.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+
+          <div className="mt-2">
+            <WorkspaceFormModal
+              buttonLabel="Add workspace"
+              onCreated={(id) => {
+                setWs(id)
+                router.refresh()
+              }}
+            />
+          </div>
+        </div>
       </div>
 
       <nav className="flex-1 p-2">
         <ul className="space-y-1">
-          {nav.map((n) => {
-            const active = pathname === n.href
+          {nav.map((item) => {
+            const active = pathname === item.href
             return (
-              <li key={n.href}>
+              <li key={item.href}>
                 <Link
-                  href={n.href}
-                  className={`block px-3 py-2 rounded ${active ? 'bg-gray-700' : 'hover:bg-gray-800'}`}
+                  href={item.href}
+                  className={`block px-3 py-2 rounded ${
+                    active ? 'bg-gray-800 text-white' : 'hover:bg-gray-800'
+                  }`}
                 >
-                  {n.label}
+                  {item.label}
                 </Link>
               </li>
             )
@@ -110,31 +104,6 @@ export default function Sidebar({
           <button className="w-full text-left px-3 py-2 rounded hover:bg-gray-800">Sign out</button>
         </form>
       </div>
-
-      {open && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/50 z-50">
-          <div className="bg-white text-gray-900 rounded-lg shadow-lg w-96 p-6">
-            <h2 className="text-lg font-semibold mb-4">Create a new workspace</h2>
-            <form onSubmit={createWorkspace} className="space-y-3">
-              <input
-                value={newWs}
-                onChange={(e) => setNewWs(e.target.value)}
-                placeholder="Workspace name"
-                className="border rounded px-3 py-2 w-full"
-                required
-              />
-              <div className="flex justify-end gap-2">
-                <button type="button" onClick={() => setOpen(false)} className="px-3 py-1.5 border rounded">
-                  Cancel
-                </button>
-                <button type="submit" className="px-3 py-1.5 bg-blue-600 text-white rounded">
-                  Create
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </aside>
   )
 }

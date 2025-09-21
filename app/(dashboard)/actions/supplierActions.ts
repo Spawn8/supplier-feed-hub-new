@@ -10,10 +10,27 @@ export type UpdateSupplierState = { ok?: boolean; error?: string }
 export type DeleteSupplierState = { ok?: boolean; error?: string }
 
 /**
+ * Internal: verify the current user is a member of a given workspace.
+ * Returns true/false without throwing (avoids .single() pitfalls).
+ */
+async function userHasMembership(supabase: any, userId: string, workspaceId: string) {
+  const { data, error } = await supabase
+    .from('workspace_members')
+    .select('workspace_id', { count: 'exact', head: false })
+    .eq('workspace_id', workspaceId)
+    .eq('user_id', userId)
+    .limit(1)
+
+  if (error) return false
+  return Array.isArray(data) && data.length > 0
+}
+
+/**
  * CREATE supplier
  * - Handles URL or File upload (XML/CSV/JSON)
  * - Requires active workspace (RLS safe)
  * - Stores optional schedule + auth credentials
+ * - Verifies membership to avoid stale-cookie RLS errors
  */
 export async function createSupplierAction(
   _prev: CreateSupplierState,
@@ -23,10 +40,10 @@ export async function createSupplierAction(
     const name = (formData.get('name') || '').toString().trim()
     const sourceType = (formData.get('source_type') || '').toString() as 'url' | 'upload'
     const endpointUrl = (formData.get('endpoint_url') || '').toString().trim()
-    const file = formData.get('file') as File | null
     const schedule = (formData.get('schedule') || '').toString().trim() || null
     const authUsername = (formData.get('auth_username') || '').toString().trim() || null
     const authPassword = (formData.get('auth_password') || '').toString().trim() || null
+    const file = formData.get('file') as File | null
 
     if (!name) return { error: 'Name is required.' }
     if (!['url', 'upload'].includes(sourceType)) return { error: 'Invalid source type.' }
@@ -34,35 +51,40 @@ export async function createSupplierAction(
     if (sourceType === 'upload' && !file) return { error: 'File is required.' }
 
     const supabase = await createSupabaseServerClient()
+
+    // Auth
+    const { data: auth } = await supabase.auth.getUser()
+    const user = auth.user
+    if (!user) return { error: 'Not authenticated.' }
+
+    // Workspace
     const wsId = await getCurrentWorkspaceId()
     if (!wsId) return { error: 'No active workspace.' }
 
-    let source_path: string | null = null
+    // Verify membership (defensive against stale cookies)
+    const isMember = await userHasMembership(supabase, user.id, wsId)
+    if (!isMember) {
+      return { error: 'You no longer have access to the selected workspace. Please switch workspace.' }
+    }
 
-    // Upload file if sourceType=upload
+    // Optional upload
+    let source_path: string | null = null
     if (sourceType === 'upload' && file) {
       const bytes = Buffer.from(await file.arrayBuffer())
       const ext = (file.name.split('.').pop() || 'xml').toLowerCase()
+      const contentType =
+        ext === 'xml' ? 'application/xml' :
+        ext === 'csv' ? 'text/csv' :
+        ext === 'json' ? 'application/json' :
+        'application/octet-stream'
+
       const objectName = `${wsId}/${randomUUID()}.${ext}`
-
-      const { error: upErr } = await supabase.storage
-        .from('feeds')
-        .upload(objectName, bytes, {
-          contentType:
-            file.type ||
-            (ext === 'csv'
-              ? 'text/csv'
-              : ext === 'json'
-              ? 'application/json'
-              : 'application/xml'),
-          upsert: false,
-        })
-
+      const { error: upErr } = await supabase.storage.from('feeds').upload(objectName, bytes, { contentType })
       if (upErr) return { error: `Upload failed: ${upErr.message}` }
       source_path = objectName
     }
 
-    // Insert into DB
+    // Insert into DB (RLS requires correct workspace_id and membership)
     const { error: insErr } = await supabase.from('suppliers').insert({
       workspace_id: wsId,
       name,
@@ -73,7 +95,6 @@ export async function createSupplierAction(
       auth_username: authUsername,
       auth_password: authPassword,
     })
-
     if (insErr) return { error: insErr.message }
 
     revalidatePath('/suppliers')
@@ -85,7 +106,8 @@ export async function createSupplierAction(
 
 /**
  * UPDATE supplier
- * - Changes metadata (name, URL, schedule, auth, type)
+ * - Allows switching between URL/UPLOAD and replacing file (optional)
+ * - Verifies membership to avoid RLS issues after workspace changes
  */
 export async function updateSupplierAction(
   _prev: UpdateSupplierState,
@@ -99,18 +121,63 @@ export async function updateSupplierAction(
     const schedule = (formData.get('schedule') || '').toString().trim() || null
     const authUsername = (formData.get('auth_username') || '').toString().trim() || null
     const authPassword = (formData.get('auth_password') || '').toString().trim() || null
+    const file = formData.get('file') as File | null
 
     if (!id) return { error: 'Missing supplier id.' }
     if (!name) return { error: 'Name is required.' }
     if (!['url', 'upload'].includes(sourceType)) return { error: 'Invalid source type.' }
-    if (sourceType === 'url' && !endpointUrl)
-      return { error: 'Endpoint URL is required for URL type.' }
+    if (sourceType === 'url' && !endpointUrl) return { error: 'Endpoint URL is required for URL type.' }
 
     const supabase = await createSupabaseServerClient()
+
+    // Auth
+    const { data: auth } = await supabase.auth.getUser()
+    const user = auth.user
+    if (!user) return { error: 'Not authenticated.' }
+
+    // Workspace
     const wsId = await getCurrentWorkspaceId()
     if (!wsId) return { error: 'No active workspace.' }
 
-    const payload: Record<string, any> = {
+    // Verify membership
+    const isMember = await userHasMembership(supabase, user.id, wsId)
+    if (!isMember) {
+      return { error: 'You no longer have access to the selected workspace. Please switch workspace.' }
+    }
+
+    // Fetch existing supplier (for file cleanup logic & RLS-safe access)
+    const { data: supplier, error: getErr } = await supabase
+      .from('suppliers')
+      .select('id, source_type, source_path')
+      .eq('id', id)
+      .eq('workspace_id', wsId)
+      .single()
+
+    if (getErr || !supplier) return { error: getErr?.message || 'Supplier not found.' }
+
+    let next_source_path: string | null | undefined = undefined
+
+    // If switching to upload or replacing file, upload new one
+    if (sourceType === 'upload' && file) {
+      const bytes = Buffer.from(await file.arrayBuffer())
+      const ext = (file.name.split('.').pop() || 'xml').toLowerCase()
+      const contentType =
+        ext === 'xml' ? 'application/xml' :
+        ext === 'csv' ? 'text/csv' :
+        ext === 'json' ? 'application/json' :
+        'application/octet-stream'
+
+      const objectName = `${wsId}/${randomUUID()}.${ext}`
+      const { error: upErr } = await supabase.storage.from('feeds').upload(objectName, bytes, { contentType })
+      if (upErr) return { error: `Upload failed: ${upErr.message}` }
+      next_source_path = objectName
+    } else if (sourceType === 'url') {
+      // If switching to URL, null out any previous source_path
+      next_source_path = null
+    }
+
+    // Build update payload
+    const updatePayload: any = {
       name,
       source_type: sourceType,
       endpoint_url: sourceType === 'url' ? endpointUrl : null,
@@ -118,14 +185,22 @@ export async function updateSupplierAction(
       auth_username: authUsername,
       auth_password: authPassword,
     }
+    if (next_source_path !== undefined) {
+      updatePayload.source_path = next_source_path
+    }
 
-    const { error } = await supabase
+    const { error: updErr } = await supabase
       .from('suppliers')
-      .update(payload)
+      .update(updatePayload)
       .eq('id', id)
       .eq('workspace_id', wsId)
 
-    if (error) return { error: error.message }
+    if (updErr) return { error: updErr.message }
+
+    // If we replaced file successfully and the old was upload, clean it up
+    if (sourceType === 'upload' && next_source_path && supplier.source_type === 'upload' && supplier.source_path) {
+      await supabase.storage.from('feeds').remove([supplier.source_path])
+    }
 
     revalidatePath('/suppliers')
     return { ok: true }
@@ -136,8 +211,8 @@ export async function updateSupplierAction(
 
 /**
  * DELETE supplier
- * - Removes row
- * - If type=upload, deletes storage object too
+ * - Deletes DB row
+ * - If it had an uploaded file, removes it from storage
  */
 export async function deleteSupplierAction(formData: FormData): Promise<DeleteSupplierState> {
   try {
@@ -145,26 +220,27 @@ export async function deleteSupplierAction(formData: FormData): Promise<DeleteSu
     if (!id) return { error: 'Missing supplier id.' }
 
     const supabase = await createSupabaseServerClient()
+
+    // Auth
+    const { data: auth } = await supabase.auth.getUser()
+    const user = auth.user
+    if (!user) return { error: 'Not authenticated.' }
+
+    // Workspace
     const wsId = await getCurrentWorkspaceId()
     if (!wsId) return { error: 'No active workspace.' }
 
-    const { data: supplier, error: selErr } = await supabase
+    // Get supplier (RLS-safe)
+    const { data: supplier, error: getErr } = await supabase
       .from('suppliers')
-      .select('id, source_type, source_path, workspace_id')
+      .select('id, source_type, source_path')
       .eq('id', id)
       .eq('workspace_id', wsId)
       .single()
+    if (getErr || !supplier) return { error: getErr?.message || 'Supplier not found.' }
 
-    if (selErr) return { error: selErr.message }
-    if (!supplier) return { error: 'Supplier not found.' }
-
-    // Delete DB row
-    const { error: delErr } = await supabase
-      .from('suppliers')
-      .delete()
-      .eq('id', id)
-      .eq('workspace_id', wsId)
-
+    // Delete row
+    const { error: delErr } = await supabase.from('suppliers').delete().eq('id', id).eq('workspace_id', wsId)
     if (delErr) return { error: delErr.message }
 
     // Remove file from storage if uploaded

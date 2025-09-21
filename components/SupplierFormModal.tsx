@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useActionState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { createSupplierAction, type CreateSupplierState } from '../(dashboard)/actions/supplierActions'
+import { createSupplierAction, type CreateSupplierState } from '@/app/(dashboard)/actions/supplierActions'
 
 const initial: CreateSupplierState = {}
 
@@ -14,29 +14,31 @@ export default function SupplierFormModal() {
   const [schedule, setSchedule] = useState('')
   const [authUsername, setAuthUsername] = useState('')
   const [authPassword, setAuthPassword] = useState('')
-  const [fileChosen, setFileChosen] = useState<File | null>(null)
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
   const [state, formAction] = useActionState(createSupplierAction, initial)
   const [isPending, startTransition] = useTransition()
-  const fileRef = useRef<HTMLInputElement | null>(null)
   const router = useRouter()
 
   useEffect(() => {
     if (state?.ok) {
+      // reset & close
       setOpen(false)
       setName('')
       setEndpointUrl('')
       setSchedule('')
       setAuthUsername('')
       setAuthPassword('')
-      setFileChosen(null)
-      if (fileRef.current) fileRef.current.value = ''
+      if (fileInputRef.current) fileInputRef.current.value = ''
       router.refresh()
     }
   }, [state?.ok, router])
 
   const valid =
     name.trim().length > 0 &&
-    (sourceType === 'url' ? endpointUrl.trim().length > 0 : !!fileChosen)
+    ((sourceType === 'url' && endpointUrl.trim().length > 0) ||
+      sourceType === 'upload')
 
   return (
     <>
@@ -55,26 +57,31 @@ export default function SupplierFormModal() {
             <form
               action={(fd: FormData) => {
                 fd.set('source_type', sourceType)
+                fd.set('name', name.trim())
+                fd.set('endpoint_url', endpointUrl.trim())
+                fd.set('schedule', schedule.trim())
+                fd.set('auth_username', authUsername.trim())
+                fd.set('auth_password', authPassword.trim())
                 startTransition(() => formAction(fd))
               }}
-              encType="multipart/form-data"
-              className="grid gap-3"
+              className="grid gap-4"
             >
-              <div className="grid md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm text-gray-600">Name *</label>
+                  <label className="text-sm text-gray-600">Name</label>
                   <input
                     name="name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className="border rounded-lg px-3 py-2 w-full"
+                    placeholder="Supplier name"
                     required
                   />
                 </div>
+
                 <div>
                   <label className="text-sm text-gray-600">Source Type</label>
                   <select
-                    name="source_type_ui"
                     value={sourceType}
                     onChange={(e) => setSourceType(e.target.value as 'url' | 'upload')}
                     className="border rounded-lg px-3 py-2 w-full"
@@ -85,34 +92,33 @@ export default function SupplierFormModal() {
                 </div>
               </div>
 
-              {sourceType === 'url' ? (
+              {sourceType === 'url' && (
                 <div>
-                  <label className="text-sm text-gray-600">Endpoint URL *</label>
+                  <label className="text-sm text-gray-600">Endpoint URL</label>
                   <input
                     name="endpoint_url"
                     value={endpointUrl}
                     onChange={(e) => setEndpointUrl(e.target.value)}
-                    placeholder="https://supplier.com/feed.xml"
                     className="border rounded-lg px-3 py-2 w-full"
-                    required
-                  />
-                </div>
-              ) : (
-                <div>
-                  <label className="text-sm text-gray-600">Upload XML/CSV/JSON *</label>
-                  <input
-                    ref={fileRef}
-                    name="file"
-                    type="file"
-                    accept=".xml,.csv,.json"
-                    className="border rounded-lg px-3 py-2 w-full"
-                    required
-                    onChange={(e) => setFileChosen(e.target.files?.[0] ?? null)}
+                    placeholder="https://example.com/feed.xml"
                   />
                 </div>
               )}
 
-              <div className="grid md:grid-cols-3 gap-3">
+              {sourceType === 'upload' && (
+                <div>
+                  <label className="text-sm text-gray-600">Upload file (XML/CSV/JSON)</label>
+                  <input
+                    ref={fileInputRef}
+                    name="file"
+                    type="file"
+                    accept=".xml,.csv,.json,application/xml,text/csv,application/json"
+                    className="block w-full text-sm file:mr-3 file:px-4 file:py-2 file:rounded file:border file:bg-gray-50"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="text-sm text-gray-600">Schedule</label>
                   <input
@@ -145,16 +151,17 @@ export default function SupplierFormModal() {
               </div>
 
               {state?.error && (
-                <div className="rounded-lg border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
+                <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
                   {state.error}
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 mt-4">
+              <div className="flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setOpen(false)}
-                  className="px-3 py-2 border rounded hover:bg-gray-100"
+                  className="px-4 py-2 border rounded hover:bg-gray-50"
+                  disabled={isPending}
                 >
                   Cancel
                 </button>

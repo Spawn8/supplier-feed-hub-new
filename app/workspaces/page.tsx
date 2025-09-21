@@ -1,17 +1,34 @@
+// app/workspaces/page.tsx
+import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getMyWorkspaces } from '@/lib/workspace'
-import WorkspaceFormModal from './WorkspaceFormModal'
 import WorkspaceList from './WorkspaceList'
+import WorkspaceFormModal from '@/components/WorkspaceFormModal'
 
 export default async function WorkspacesPage() {
   const supabase = await createSupabaseServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return <main className="p-8">Please log in to manage workspaces.</main>
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (!user) {
+    return (
+      <main className="min-h-screen flex items-center justify-center">
+        <p>
+          Please{' '}
+          <Link className="text-blue-600 underline" href="/login">
+            log in
+          </Link>
+          .
+        </p>
+      </main>
+    )
+  }
 
   const workspaces = await getMyWorkspaces()
 
   return (
-    <main className="p-8">
+    <main className="min-h-screen p-8">
       <div className="max-w-5xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold">Workspaces</h1>

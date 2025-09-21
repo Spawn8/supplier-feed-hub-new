@@ -1,0 +1,15 @@
+How to save:
+
+Stage them:
+
+git add .
+
+
+Commit them:
+
+git commit -m "feat: improve sidebar UI + fix login page"
+
+
+Push them:
+
+git push origin main

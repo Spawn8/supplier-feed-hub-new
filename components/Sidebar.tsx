@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter, usePathname } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 
 export default function Sidebar({
@@ -16,6 +16,11 @@ export default function Sidebar({
   const router = useRouter()
   const pathname = usePathname()
   const [ws, setWs] = useState(activeWsId ?? '')
+
+  // Keep local state in sync if server-side active changes (e.g., after refresh)
+  useEffect(() => {
+    setWs(activeWsId ?? '')
+  }, [activeWsId])
 
   async function handleSwitch(id: string) {
     setWs(id)
@@ -34,9 +39,15 @@ export default function Sidebar({
     e.preventDefault()
     const fd = new FormData()
     fd.set('name', newWs)
-    await fetch('/api/create-workspace', { method: 'POST', body: fd })
+    const res = await fetch('/api/create-workspace', { method: 'POST', body: fd })
+    const j = await res.json().catch(() => ({}))
     setOpen(false)
     setNewWs('')
+
+    // The route sets the cookie; update local state so the dropdown reflects it immediately
+    if (j?.id) {
+      setWs(j.id)
+    }
     router.refresh()
   }
 
@@ -59,12 +70,15 @@ export default function Sidebar({
           onChange={(e) => handleSwitch(e.target.value)}
           className="w-full bg-gray-800 text-gray-100 rounded px-2 py-1 text-sm"
         >
+          {/* Placeholder when no active workspace yet */}
+          {(!ws || ws === '') && <option value="">— Select workspace —</option>}
           {workspaces.map((w) => (
             <option key={w.id} value={w.id}>
               {w.name}
             </option>
           ))}
         </select>
+
         <button
           onClick={() => setOpen(true)}
           className="mt-3 w-full text-sm bg-blue-600 hover:bg-blue-500 rounded px-3 py-1.5"

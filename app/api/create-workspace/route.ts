@@ -1,5 +1,5 @@
-// app/api/create-workspace/route.ts
 import { NextResponse } from 'next/server'
+import { cookies } from 'next/headers'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 
 export async function POST(req: Request) {
@@ -17,14 +17,23 @@ export async function POST(req: Request) {
     .select('id')
     .single()
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+  if (error || !ws) return NextResponse.json({ error: error?.message || 'Create failed' }, { status: 400 })
 
-  // ✅ ensure the creator is a member (RLS needs this)
   await supabase.from('workspace_members').insert({
     workspace_id: ws.id,
     user_id: user.id,
     role: 'owner',
   })
 
-  return NextResponse.json({ ok: true })
+  const c = await cookies()
+  c.set({
+    name: 'current_workspace_id',
+    value: ws.id,
+    httpOnly: false,
+    sameSite: 'lax',
+    maxAge: 60 * 60 * 24 * 30,
+    path: '/',
+  })
+
+  return NextResponse.json({ ok: true, id: ws.id })
 }

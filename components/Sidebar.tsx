@@ -35,6 +35,7 @@ export default function Sidebar({
   const nav = [
     { href: '/', label: 'Dashboard' },
     { href: '/suppliers', label: 'Suppliers' },
+    { href: '/fields', label: 'Fields' },        // ← NEW
     { href: '/workspaces', label: 'Workspaces' },
   ]
 
@@ -63,7 +64,6 @@ export default function Sidebar({
           </select>
 
           <div className="mt-2">
-            {/* Workspace modal trigger is now primary, matching Add Supplier */}
             <WorkspaceFormModal
               buttonLabel="Add workspace"
               onCreated={(id) => { setWs(id); router.refresh() }}
@@ -80,7 +80,9 @@ export default function Sidebar({
               <li key={item.href}>
                 <Link
                   href={item.href}
-                  className={`block px-3 py-2 rounded ${active ? 'bg-gray-800 text-white' : 'hover:bg-gray-800'}`}
+                  className={`block px-3 py-2 rounded cursor-pointer no-underline ${
+                    active ? 'bg-gray-800 text-white' : 'hover:bg-gray-800'
+                  }`}
                 >
                   {item.label}
                 </Link>

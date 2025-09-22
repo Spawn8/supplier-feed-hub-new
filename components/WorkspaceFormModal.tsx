@@ -2,6 +2,9 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import Modal from '@/components/ui/Modal'
+import Button from '@/components/ui/Button'
+import Input from '@/components/ui/Input'
 
 export default function WorkspaceFormModal({
   onCreated,
@@ -27,69 +30,60 @@ export default function WorkspaceFormModal({
     const j = await res.json().catch(() => ({}))
     setOpen(false)
     setName('')
-    if (j?.id && onCreated) onCreated(j.id) // sidebar dropdown instant sync
+    if (j?.id && onCreated) onCreated(j.id)
     router.refresh()
   }
 
   return (
     <>
-      <button
-        onClick={() => setOpen(true)}
-        className="px-3 py-2 rounded-lg border shadow hover:bg-gray-50"
-      >
-        {buttonLabel}
-      </button>
+      {/* Primary like Add Supplier */}
+      <Button variant="primary" onClick={() => setOpen(true)}>
+        + {buttonLabel}
+      </Button>
 
-      {open && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black/50 z-50">
-          <div className="bg-white text-gray-900 rounded-lg shadow-lg w-96 p-6">
-            <h2 className="text-lg font-semibold mb-4">Create a new workspace</h2>
-
-            <form
-              action={(fd: FormData) => {
-                fd.set('name', name.trim())
-                startTransition(() => createWorkspace(fd))
-              }}
-              className="grid gap-3"
+      <Modal
+        open={open}
+        title="Create a new workspace"
+        onClose={() => setOpen(false)}
+        footer={
+          <>
+            <Button onClick={() => setOpen(false)}>Cancel</Button>
+            <Button
+              form="workspace-create-form"
+              type="submit"
+              variant="primary"
+              disabled={isPending || !name.trim()}
             >
-              <div>
-                <label className="text-sm text-gray-600">Name</label>
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="mt-1 w-full border rounded-lg px-3 py-2"
-                  placeholder="Workspace name"
-                  required
-                />
-              </div>
-
-              {error && (
-                <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
-                  {error}
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setOpen(false)}
-                  className="px-3 py-1.5 border rounded"
-                  disabled={isPending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isPending || !name.trim()}
-                  className="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-500 disabled:opacity-50"
-                >
-                  {isPending ? 'Creating…' : 'Create'}
-                </button>
-              </div>
-            </form>
+              {isPending ? 'Creating…' : 'Create'}
+            </Button>
+          </>
+        }
+      >
+        <form
+          id="workspace-create-form"
+          action={(fd: FormData) => {
+            fd.set('name', name.trim())
+            startTransition(() => createWorkspace(fd))
+          }}
+          className="grid gap-3"
+        >
+          <div className="field">
+            <label className="label">Name</label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Workspace name"
+              required
+            />
           </div>
-        </div>
-      )}
+
+          {error && (
+            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
+              {error}
+            </div>
+          )}
+        </form>
+      </Modal>
     </>
   )
 }

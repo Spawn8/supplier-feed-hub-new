@@ -3,7 +3,7 @@ import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
 export async function POST(req: NextRequest) {
-  // Prepare a redirect response (we'll also write auth cookies into this response)
+  // Prepare a redirect response (also where we'll write auth cookies)
   const res = NextResponse.redirect(new URL('/login', req.url))
 
   const cookieStore = await cookies()
@@ -27,5 +27,9 @@ export async function POST(req: NextRequest) {
   )
 
   await supabase.auth.signOut()
+
+  // Clear active workspace cookie too
+  res.cookies.delete('current_workspace_id')
+
   return res
 }

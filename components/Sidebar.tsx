@@ -3,6 +3,7 @@
 import { useRouter, usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import Button from '@/components/ui/Button'
 import WorkspaceFormModal from '@/components/WorkspaceFormModal'
 
 export default function Sidebar({
@@ -18,9 +19,7 @@ export default function Sidebar({
   const pathname = usePathname()
   const [ws, setWs] = useState<string | null>(activeWsId ?? null)
 
-  useEffect(() => {
-    setWs(activeWsId ?? null)
-  }, [activeWsId])
+  useEffect(() => { setWs(activeWsId ?? null) }, [activeWsId])
 
   async function switchWorkspace(id: string) {
     const res = await fetch('/api/switch-workspace', {
@@ -50,30 +49,24 @@ export default function Sidebar({
         <div className="mt-4">
           <label className="block text-xs text-gray-400">Workspace</label>
           <select
-            className="mt-1 w-full bg-gray-800 text-gray-100 border border-gray-700 rounded px-2 py-1"
+            className="mt-1 w-full bg-gray-800 text-gray-100 border border-gray-700 rounded px-2 py-1 cursor-pointer"
             value={ws ?? ''}
             onChange={(e) => {
               const id = e.target.value
               if (id) switchWorkspace(id)
             }}
           >
-            <option value="" disabled>
-              Select workspace…
-            </option>
+            <option value="" disabled>Select workspace…</option>
             {workspaces?.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
+              <option key={w.id} value={w.id}>{w.name}</option>
             ))}
           </select>
 
           <div className="mt-2">
+            {/* Workspace modal trigger is now primary, matching Add Supplier */}
             <WorkspaceFormModal
               buttonLabel="Add workspace"
-              onCreated={(id) => {
-                setWs(id)
-                router.refresh()
-              }}
+              onCreated={(id) => { setWs(id); router.refresh() }}
             />
           </div>
         </div>
@@ -87,9 +80,7 @@ export default function Sidebar({
               <li key={item.href}>
                 <Link
                   href={item.href}
-                  className={`block px-3 py-2 rounded ${
-                    active ? 'bg-gray-800 text-white' : 'hover:bg-gray-800'
-                  }`}
+                  className={`block px-3 py-2 rounded ${active ? 'bg-gray-800 text-white' : 'hover:bg-gray-800'}`}
                 >
                   {item.label}
                 </Link>
@@ -101,7 +92,7 @@ export default function Sidebar({
 
       <div className="p-4 border-t border-gray-800 text-sm">
         <form action="/auth/signout" method="post">
-          <button className="w-full text-left px-3 py-2 rounded hover:bg-gray-800">Sign out</button>
+          <Button className="w-full justify-start cursor-pointer">Sign out</Button>
         </form>
       </div>
     </aside>

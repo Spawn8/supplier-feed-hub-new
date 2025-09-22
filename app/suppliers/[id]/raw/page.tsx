@@ -12,13 +12,20 @@ export default async function SupplierRawPage({ params }: { params: { id: string
 
   const supplierId = params.id
 
-  const { data: rows, error } = await supabase
-    .from('products_raw')
-    .select('id, external_id, ean, sku, title, price, currency, category, brand, image_url, imported_at')
-    .eq('workspace_id', wsId)
-    .eq('supplier_id', supplierId)
-    .order('imported_at', { ascending: false })
-    .limit(200)
+  const [{ data: fields }, { data: items, error }] = await Promise.all([
+    supabase
+      .from('custom_fields')
+      .select('id, name, key, sort_order')
+      .eq('workspace_id', wsId)
+      .order('sort_order', { ascending: true }),
+    supabase
+      .from('products_mapped')
+      .select('id, external_id, fields, imported_at')
+      .eq('workspace_id', wsId)
+      .eq('supplier_id', supplierId)
+      .order('imported_at', { ascending: false })
+      .limit(300),
+  ])
 
   if (error) {
     return (
@@ -30,12 +37,17 @@ export default async function SupplierRawPage({ params }: { params: { id: string
     )
   }
 
+  const cols = fields ?? []
+
   return (
     <main className="p-8">
-      <div className="max-w-6xl mx-auto space-y-6">
+      <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Raw items</h1>
-          <Link href="/suppliers" className="btn">Back to suppliers</Link>
+          <h1 className="text-2xl font-semibold">Raw items (workspace fields)</h1>
+          <div className="flex items-center gap-2">
+            <Link href={`/suppliers/${supplierId}/map`} className="btn">Map fields</Link>
+            <Link href="/suppliers" className="btn">Back</Link>
+          </div>
         </div>
 
         <div className="table-wrap">
@@ -43,34 +55,29 @@ export default async function SupplierRawPage({ params }: { params: { id: string
             <thead className="thead">
               <tr>
                 <th className="th">Ext ID</th>
-                <th className="th">SKU</th>
-                <th className="th">EAN</th>
-                <th className="th">Title</th>
-                <th className="th">Price</th>
-                <th className="th">Category</th>
-                <th className="th">Brand</th>
+                {cols.map((c: any) => (
+                  <th className="th" key={c.id}>{c.name}</th>
+                ))}
                 <th className="th">Imported</th>
               </tr>
             </thead>
             <tbody>
-              {(rows || []).map(r => (
-                <tr key={r.id} className="border-b last:border-b-0">
-                  <td className="td">{r.external_id || '—'}</td>
-                  <td className="td">{r.sku || '—'}</td>
-                  <td className="td">{r.ean || '—'}</td>
-                  <td className="td">{r.title || '—'}</td>
-                  <td className="td">{r.price != null ? `${r.price} ${r.currency || ''}` : '—'}</td>
-                  <td className="td">{r.category || '—'}</td>
-                  <td className="td">{r.brand || '—'}</td>
-                  <td className="td">{new Date(r.imported_at).toLocaleString()}</td>
+              {(items ?? []).map((row: any) => (
+                <tr key={row.id} className="border-b last:border-b-0">
+                  <td className="td">{row.external_id || '—'}</td>
+                  {cols.map((c: any) => {
+                    const v = row.fields?.[c.key]
+                    return <td className="td" key={c.id}>{v == null ? '—' : String(v)}</td>
+                  })}
+                  <td className="td">{new Date(row.imported_at).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
 
-        {(!rows || rows.length === 0) && (
-          <div className="text-muted">No items found for this supplier.</div>
+        {(!items || items.length === 0) && (
+          <div className="text-muted">No items found for this supplier. Import a feed after mapping.</div>
         )}
       </div>
     </main>

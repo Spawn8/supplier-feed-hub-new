@@ -2,24 +2,19 @@
 import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
-import SupplierFormModal from '@/components/SupplierFormModal'
 import SupplierEditModal from '@/components/SupplierEditModal'
 import Button from '@/components/ui/Button'
-import ImportNowButton from '@/components/ImportNowButton'
+import ReRunButton from '@/components/ReRunButton'
 import { deleteSupplierAction } from '../(dashboard)/actions/supplierActions'
 
 export default async function SuppliersPage() {
   const supabase = await createSupabaseServerClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const { data: { user } } = await supabase.auth.getUser()
 
   if (!user) {
     return (
       <main className="min-h-screen flex items-center justify-center">
-        <p>
-          Please <Link className="text-blue-600" href="/login">log in</Link>.
-        </p>
+        <p>Please <Link className="text-blue-600" href="/login">log in</Link>.</p>
       </main>
     )
   }
@@ -31,11 +26,7 @@ export default async function SuppliersPage() {
         <div className="text-center space-y-3">
           <h1 className="text-2xl font-semibold">No workspace selected</h1>
           <p className="text-gray-600">
-            Go to{' '}
-            <Link href="/workspaces" className="text-blue-600">
-              Workspaces
-            </Link>{' '}
-            to create or select one.
+            Go to <Link href="/workspaces" className="text-blue-600">Workspaces</Link> to create or select one.
           </p>
         </div>
       </main>
@@ -44,9 +35,7 @@ export default async function SuppliersPage() {
 
   const { data: suppliers, error } = await supabase
     .from('suppliers')
-    .select(
-      'id, name, source_type, endpoint_url, source_path, schedule, auth_username, auth_password, created_at'
-    )
+    .select('id, name, source_type, endpoint_url, source_path, schedule, created_at')
     .eq('workspace_id', wsId)
     .order('created_at', { ascending: false })
 
@@ -62,16 +51,13 @@ export default async function SuppliersPage() {
     )
   }
 
-  // Fetch recent ingestion status per supplier (just the latest)
+  // recent ingestion status
   let lastStatus = new Map<string, string>()
   if (suppliers && suppliers.length > 0) {
     const { data: recentIngestions } = await supabase
       .from('feed_ingestions')
       .select('supplier_id, status, finished_at')
-      .in(
-        'supplier_id',
-        suppliers.map((s: any) => s.id)
-      )
+      .in('supplier_id', suppliers.map((s:any) => s.id))
       .order('finished_at', { ascending: false })
 
     if (recentIngestions) {
@@ -89,7 +75,7 @@ export default async function SuppliersPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold">Suppliers</h1>
-          <SupplierFormModal />
+          <Link href="/suppliers/new" className="btn">+ Add Supplier</Link>
         </div>
 
         {/* Table */}
@@ -116,25 +102,24 @@ export default async function SuppliersPage() {
                     <tr key={s.id} className="border-b last:border-b-0">
                       <td className="td">{s.name}</td>
                       <td className="td">{s.source_type}</td>
-                      <td className="td">
-                        {s.source_type === 'url' ? s.endpoint_url : s.source_path || '—'}
-                      </td>
+                      <td className="td">{s.source_type === 'url' ? s.endpoint_url : s.source_path || '—'}</td>
                       <td className="td">{s.schedule || '—'}</td>
                       <td className="td">{lastStatus.get(s.id) ?? '—'}</td>
                       <td className="td">
                         <div className="flex flex-wrap items-center gap-2">
-                          {/* Import without leaving the page */}
-                          <ImportNowButton supplierId={s.id} />
+                          {/* Re-run import */}
+                          <ReRunButton supplierId={s.id} />
 
-                          {/* View raw imported items for this supplier */}
-                          <Link href={`/suppliers/${s.id}/raw`} className="btn">
-                            View items
-                          </Link>
+                          {/* Map fields */}
+                          <Link href={`/suppliers/${s.id}/map`} className="btn">Map fields</Link>
 
-                          {/* Edit supplier */}
+                          {/* View items */}
+                          <Link href={`/suppliers/${s.id}/raw`} className="btn">View items</Link>
+
+                          {/* Edit basic fields */}
                           <SupplierEditModal supplier={s} />
 
-                          {/* Delete supplier (server action) */}
+                          {/* Delete */}
                           <form action={deleteSupplierAction}>
                             <input type="hidden" name="supplier_id" value={s.id} />
                             <Button variant="danger" aria-label="Delete supplier" className="cursor-pointer">

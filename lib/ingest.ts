@@ -202,48 +202,51 @@ async function batchInsert(
   const fieldIndex = new Map<string, FieldDef>(
     fieldDefs.map((f) => [f.key.toLowerCase(), f])
   )
+const mappings = await loadFieldMappings(supabase, workspace_id, supplier_id) // source_key(lower) -> field_key
+const fieldByKey = new Map(fieldDefs.map((f) => [f.key, f]))                  // field_key -> def
 
   const mappedPayload = rows.map((r: any) => {
-    const fields: Record<string, any> = {}
+  const fields: Record<string, any> = {}
 
-    // Normalized candidates first
-    const normalized = {
-      external_id: r.external_id,
-      ean: r.ean,
-      sku: r.sku,
-      title: r.title,
-      description: r.description,
-      price: r.price,
-      currency: r.currency,
-      quantity: r.quantity,
-      category: r.category,
-      brand: r.brand,
-      image_url: r.image_url,
-    }
+  // Normalized candidates
+  const normalized = {
+    external_id: r.external_id, ean: r.ean, sku: r.sku, title: r.title,
+    description: r.description, price: r.price, currency: r.currency,
+    quantity: r.quantity, category: r.category, brand: r.brand, image_url: r.image_url,
+  }
 
-    // Flatten raw (case-insensitive lookup)
-    const flatRaw: Record<string, any> =
-      r.raw && typeof r.raw === 'object'
-        ? Object.fromEntries(
-            Object.entries(r.raw).map(([k, v]) => [k.toLowerCase(), v])
-          )
-        : {}
+  // Flatten raw for lookup
+  const flatRaw: Record<string, any> =
+    r.raw && typeof r.raw === 'object'
+      ? Object.fromEntries(Object.entries(r.raw).map(([k, v]) => [k.toLowerCase(), v]))
+      : {}
 
-    for (const [kLower, def] of fieldIndex.entries()) {
-      let val = (normalized as any)[kLower]
-      if (val == null) val = flatRaw[kLower]
-      fields[def.key] = coerceDatatype(val, def.datatype)
-    }
+  // 1) Apply explicit supplier mappings first
+  for (const [srcLower, dstFieldKey] of mappings.entries()) {
+    const def = fieldByKey.get(dstFieldKey)
+    if (!def) continue
+    const rawVal = flatRaw[srcLower]
+    const normVal = (normalized as any)[srcLower] // e.g. if user mapped "sku"→"my_sku"
+    const chosen = normVal ?? rawVal
+    fields[def.key] = coerceDatatype(chosen, def.datatype)
+  }
 
-    return {
-      workspace_id,
-      supplier_id,
-      ingestion_id,
-      external_id: r.external_id,
-      fields,
-      source_file: source_file || null,
-    }
-  })
+  // 2) Fill remaining defined fields by best-effort (normalized key name, then raw)
+  for (const def of fieldDefs) {
+    if (fields[def.key] !== undefined) continue
+    const kLower = def.key.toLowerCase()
+    let val = (normalized as any)[kLower]
+    if (val == null) val = flatRaw[kLower]
+    fields[def.key] = coerceDatatype(val, def.datatype)
+  }
+
+  return {
+    workspace_id, supplier_id, ingestion_id,
+    external_id: r.external_id,
+    fields,
+    source_file: source_file || null,
+  }
+})
 
   {
     const { error } = await supabase
@@ -255,6 +258,29 @@ async function batchInsert(
     if (error) throw error
   }
 }
+
+/** ========================================================================
+ * Update ingestion to honor mappings
+ * ====================================================================== */
+
+async function loadFieldMappings(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  supplier_id: string
+): Promise<Map<string, string>> {
+  const { data, error } = await supabase
+    .from('field_mappings')
+    .select('source_key, field_key')
+    .eq('workspace_id', workspace_id)
+    .eq('supplier_id', supplier_id)
+  if (error) throw error
+  const map = new Map<string, string>()
+  for (const r of data || []) {
+    map.set(String(r.source_key).toLowerCase(), String(r.field_key))
+  }
+  return map
+}
+
 
 /** ========================================================================
  * CSV (streaming)

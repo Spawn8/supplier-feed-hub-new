@@ -1,134 +1,126 @@
+// app/api/suppliers/[id]/ingest/route.ts
 import { NextResponse } from 'next/server'
+import { Readable } from 'stream'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { detectFeedType, ingestCSV, ingestJSON, ingestXMLBuffer } from '@/lib/ingest'
-import { Readable } from 'stream'
 
-const DEFAULT_BUCKET = process.env.NEXT_PUBLIC_SUPPLIER_UPLOADS_BUCKET || 'supplier-uploads'
+const UPLOADS_BUCKET = process.env.NEXT_PUBLIC_SUPPLIER_UPLOADS_BUCKET || 'supplier-uploads'
 
-export async function POST(
-  _req: Request,
-  { params }: { params: { id: string } }
-) {
+export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id: routeId } = await ctx.params // ← Next 15: params is a Promise
   const supabase = await createSupabaseServerClient()
-  const { data: auth } = await supabase.auth.getUser()
-  const user = auth?.user
+
+  // Auth
+  const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
-  // Load supplier with workspace id
-  const { data: supplier, error: sErr } = await supabase
+  // Supplier (+ uid_source_key)
+  const { data: sup, error: supErr } = await supabase
     .from('suppliers')
-    .select('id, workspace_id, name, source_type, endpoint_url, source_path, schedule, auth_username, auth_password')
-    .eq('id', params.id)
+    .select('id, workspace_id, source_type, endpoint_url, source_path, auth_username, auth_password, uid_source_key')
+    .eq('id', routeId)
     .single()
-  if (sErr || !supplier) return NextResponse.json({ error: sErr?.message || 'Supplier not found' }, { status: 404 })
+  if (supErr || !sup) return NextResponse.json({ error: supErr?.message || 'Supplier not found' }, { status: 404 })
+  if (!sup.uid_source_key) {
+    return NextResponse.json({ error: 'UID source key is missing. Set it in step 3 of the wizard (Unique Identifier) before importing.' }, { status: 400 })
+  }
 
-  // Create ingestion row
-  const { data: ing, error: iErr } = await supabase
-    .from('feed_ingestions')
-    .insert({
-      workspace_id: supplier.workspace_id,
-      supplier_id: supplier.id,
-      source_url: supplier.source_type === 'url' ? supplier.endpoint_url : supplier.source_path,
-      status: 'pending'
-    })
-    .select('id')
-    .single()
-  if (iErr || !ing) return NextResponse.json({ error: iErr?.message || 'Could not start ingestion' }, { status: 400 })
-
-  let stream: Readable | null = null
-  let type: 'csv'|'json'|'xml' = 'json'
+  // Prepare stream
+  let stream: Readable
+  let hint = ''
   let contentType = ''
-  let sourceLabel = supplier.endpoint_url || supplier.source_path || ''
 
-  try {
-    if (supplier.source_type === 'url') {
-      if (!supplier.endpoint_url) throw new Error('Missing endpoint_url')
-      const headers: Record<string, string> = {}
-      if (supplier.auth_username && supplier.auth_password) {
-        const token = Buffer.from(`${supplier.auth_username}:${supplier.auth_password}`).toString('base64')
-        headers['Authorization'] = `Basic ${token}`
-      }
-      const res = await fetch(supplier.endpoint_url, { headers })
-      if (!res.ok || !res.body) throw new Error(`Fetch failed: ${res.status}`)
-      contentType = res.headers.get('content-type') || ''
-      type = detectFeedType(supplier.endpoint_url, contentType)
-      // convert web stream to node stream
-      // @ts-ignore
-      stream = Readable.fromWeb(res.body as any)
-    } else {
-      // upload case: get a signed URL then fetch
-      if (!supplier.source_path) throw new Error('Missing source_path')
-      const { data: sign, error: signErr } = await supabase
-        .storage
-        .from(DEFAULT_BUCKET)
-        .createSignedUrl(supplier.source_path, 60 * 30) // 30 min
-      if (signErr || !sign?.signedUrl) throw new Error(signErr?.message || 'Cannot sign file URL')
+  if (sup.source_type === 'url') {
+    if (!sup.endpoint_url) return NextResponse.json({ error: 'endpoint_url is missing for URL source' }, { status: 400 })
 
-      const res = await fetch(sign.signedUrl)
-      if (!res.ok || !res.body) throw new Error(`Download failed: ${res.status}`)
-      contentType = res.headers.get('content-type') || ''
-      type = detectFeedType(supplier.source_path, contentType)
-      // @ts-ignore
-      stream = Readable.fromWeb(res.body as any)
+    const headers: Record<string, string> = {}
+    if (sup.auth_username && sup.auth_password) {
+      headers.Authorization = 'Basic ' + Buffer.from(`${sup.auth_username}:${sup.auth_password}`).toString('base64')
     }
 
-    if (!stream) throw new Error('No stream available')
+    const resp = await fetch(sup.endpoint_url, { headers })
+    if (!resp.ok) {
+      return NextResponse.json({ error: `Failed to fetch: ${resp.status} ${resp.statusText}` }, { status: 400 })
+    }
+    hint = sup.endpoint_url
+    contentType = resp.headers.get('content-type') || ''
+    const ab = await resp.arrayBuffer()
+    stream = Readable.from(Buffer.from(ab))
+  } else if (sup.source_type === 'upload') {
+    if (!sup.source_path) return NextResponse.json({ error: 'source_path is missing for uploaded source' }, { status: 400 })
+    const { data, error } = await supabase.storage.from(UPLOADS_BUCKET).download(sup.source_path)
+    if (error) return NextResponse.json({ error: `Download failed: ${error.message}` }, { status: 400 })
+    const ab = await data.arrayBuffer()
+    stream = Readable.from(Buffer.from(ab))
+    hint = sup.source_path
+  } else {
+    return NextResponse.json({ error: `Unknown source_type: ${sup.source_type}` }, { status: 400 })
+  }
 
-    // Run parser
+  const type = detectFeedType(hint, contentType)
+  const ingestion_id = crypto.randomUUID()
+
+  // 1) Create feed_ingestions **with only guaranteed columns**
+  {
+    const { error } = await supabase.from('feed_ingestions').insert({
+      id: ingestion_id,
+      workspace_id: sup.workspace_id,
+      supplier_id: sup.id,
+      // intentionally not inserting columns your schema may not have (source_hint, status, etc.)
+    })
+    if (error) {
+      return NextResponse.json({ error: `Could not create feed_ingestions: ${error.message}` }, { status: 400 })
+    }
+  }
+
+  try {
+    // 2) Ingest
     let stats
     if (type === 'csv') {
       stats = await ingestCSV({
-        stream, supabase,
-        workspace_id: supplier.workspace_id,
-        supplier_id: supplier.id,
-        ingestion_id: ing.id,
-        source_file: sourceLabel
+        stream,
+        supabase,
+        workspace_id: sup.workspace_id,
+        supplier_id: sup.id,
+        ingestion_id,
+        uid_source_key: sup.uid_source_key,
+        source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     } else if (type === 'json') {
       stats = await ingestJSON({
-        stream, supabase,
-        workspace_id: supplier.workspace_id,
-        supplier_id: supplier.id,
-        ingestion_id: ing.id,
-        source_file: sourceLabel
+        stream,
+        supabase,
+        workspace_id: sup.workspace_id,
+        supplier_id: sup.id,
+        ingestion_id,
+        uid_source_key: sup.uid_source_key,
+        source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     } else {
-      // XML (buffer-based first pass)
       stats = await ingestXMLBuffer({
-        stream, supabase,
-        workspace_id: supplier.workspace_id,
-        supplier_id: supplier.id,
-        ingestion_id: ing.id,
-        source_file: sourceLabel
+        stream,
+        supabase,
+        workspace_id: sup.workspace_id,
+        supplier_id: sup.id,
+        ingestion_id,
+        uid_source_key: sup.uid_source_key,
+        source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     }
 
-    const status =
-      stats.errors === 0 ? 'success'
-      : stats.ok > 0 ? 'partial'
-      : 'error'
+    // 3) Optionally update counts if your schema has these columns (safe to call; unknown columns are ignored by PostgREST)
+    await supabase.from('feed_ingestions').update({
+      total_count: stats?.total ?? null,
+      ok_count: stats?.ok ?? null,
+      error_count: stats?.errors ?? null,
+    }).eq('id', ingestion_id)
 
-    await supabase
-      .from('feed_ingestions')
-      .update({
-        finished_at: new Date().toISOString(),
-        status,
-        items_total: stats.total,
-        items_ok: stats.ok,
-        items_error: stats.errors
-      })
-      .eq('id', ing.id)
-
-    return NextResponse.json({ ok: true, ingestion_id: ing.id, stats, type })
+    return NextResponse.json({ ok: true, ingestion_id, stats, type })
   } catch (e: any) {
-    await supabase
-      .from('feed_ingestions')
-      .update({
-        finished_at: new Date().toISOString(),
-        status: 'error',
-        error_message: e?.message || 'Unknown error'
-      })
-      .eq('id', ing.id)
+    // Mark error message if you have an error column (safe to call)
+    await supabase.from('feed_ingestions').update({
+      error_message: e?.message || 'Ingestion failed',
+    }).eq('id', ingestion_id)
 
     return NextResponse.json({ error: e?.message || 'Ingestion failed' }, { status: 500 })
   }

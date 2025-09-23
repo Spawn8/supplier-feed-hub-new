@@ -20,7 +20,7 @@ export default async function SupplierRawPage({ params }: { params: { id: string
       .order('sort_order', { ascending: true }),
     supabase
       .from('products_mapped')
-      .select('id, external_id, fields, imported_at')
+      .select('id, uid, fields, imported_at')   // <-- uid kept for dedupe, not displayed
       .eq('workspace_id', wsId)
       .eq('supplier_id', supplierId)
       .order('imported_at', { ascending: false })
@@ -43,7 +43,7 @@ export default async function SupplierRawPage({ params }: { params: { id: string
     <main className="p-8">
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Raw items (workspace fields)</h1>
+          <h1 className="text-2xl font-semibold">Items</h1>
           <div className="flex items-center gap-2">
             <Link href={`/suppliers/${supplierId}/map`} className="btn">Map fields</Link>
             <Link href="/suppliers" className="btn">Back</Link>
@@ -54,7 +54,7 @@ export default async function SupplierRawPage({ params }: { params: { id: string
           <table className="table">
             <thead className="thead">
               <tr>
-                <th className="th">Ext ID</th>
+                <th className="th">ID</th> {/* internal DB id */}
                 {cols.map((c: any) => (
                   <th className="th" key={c.id}>{c.name}</th>
                 ))}
@@ -64,7 +64,7 @@ export default async function SupplierRawPage({ params }: { params: { id: string
             <tbody>
               {(items ?? []).map((row: any) => (
                 <tr key={row.id} className="border-b last:border-b-0">
-                  <td className="td">{row.external_id || '—'}</td>
+                  <td className="td">{row.id}</td>
                   {cols.map((c: any) => {
                     const v = row.fields?.[c.key]
                     return <td className="td" key={c.id}>{v == null ? '—' : String(v)}</td>

@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
 import FieldFormModal from '@/components/FieldFormModal'
-import FieldDeleteButton from '@/components/FieldDeleteButton'
+import FieldsSortableTable from '@/components/FieldsSortableTable'
 
 export default async function FieldsPage() {
   const supabase = await createSupabaseServerClient()
@@ -29,22 +29,6 @@ export default async function FieldsPage() {
     )
   }
 
-  const { data: fields, error } = await supabase
-    .from('custom_fields')
-    .select('id, name, key, datatype, sort_order')
-    .eq('workspace_id', wsId)
-    .order('sort_order', { ascending: true })
-
-  if (error) {
-    return (
-      <main className="p-8">
-        <div className="rounded border border-red-200 bg-red-50 text-red-700 px-3 py-2">
-          {error.message}
-        </div>
-      </main>
-    )
-  }
-
   return (
     <main className="p-8">
       <div className="max-w-5xl mx-auto space-y-6">
@@ -53,36 +37,8 @@ export default async function FieldsPage() {
           <FieldFormModal />
         </div>
 
-        <div className="table-wrap">
-          <table className="table">
-            <thead className="thead">
-              <tr>
-                <th className="th">Name</th>
-                <th className="th">Key</th>
-                <th className="th">Type</th>
-                <th className="th">Order</th>
-                <th className="th">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(fields ?? []).map((f: any) => (
-                <tr key={f.id} className="border-b last:border-b-0">
-                  <td className="td">{f.name}</td>
-                  <td className="td">{f.key}</td>
-                  <td className="td">{f.datatype}</td>
-                  <td className="td">{f.sort_order}</td>
-                  <td className="td">
-                    <FieldDeleteButton id={f.id} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {(fields ?? []).length === 0 && (
-          <div className="text-muted">No fields yet. Click “Add Field”.</div>
-        )}
+        {/* Draggable, orderable fields table */}
+        <FieldsSortableTable />
       </div>
     </main>
   )

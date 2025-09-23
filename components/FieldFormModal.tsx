@@ -13,72 +13,48 @@ export default function FieldFormModal() {
   const [name, setName] = useState('')
   const [key, setKey] = useState('')
   const [datatype, setDatatype] = useState<'text' | 'number' | 'bool' | 'date' | 'json'>('text')
-  const [sortOrder, setSortOrder] = useState<number>(0)
   const [error, setError] = useState<string | null>(null)
   const [isPending, start] = useTransition()
 
   return (
     <>
-      <Button variant="primary" onClick={() => setOpen(true)}>
-        + Add Field
-      </Button>
-
-      <Modal
-        open={open}
-        title="Add field"
-        onClose={() => setOpen(false)}
-        footer={
-          <>
-            <Button onClick={() => setOpen(false)}>Cancel</Button>
-            <Button
-              type="submit"
-              form="field-create-form"
-              variant="primary"
-              disabled={!name.trim() || !key.trim() || isPending}
-            >
-              {isPending ? 'Saving…' : 'Save'}
-            </Button>
-          </>
-        }
-      >
+      <Button onClick={()=>setOpen(true)}>Add Field</Button>
+      <Modal open={open} onClose={()=>setOpen(false)} title="Add Field">
         <form
-          id="field-create-form"
-          action={(fd: FormData) => {
+          className="space-y-4"
+          onSubmit={(e)=>{
+            e.preventDefault()
             setError(null)
-            start(async () => {
+            start(async ()=>{
               const res = await fetch('/api/fields/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  name: name.trim(),
-                  key: key.trim(),
-                  datatype,
-                  sort_order: Number(sortOrder) || 0,
-                }),
+                body: JSON.stringify({ name, key, datatype }),
               })
               if (!res.ok) {
                 const j = await res.json().catch(()=>({}))
-                setError(j?.error || 'Failed to create field.')
+                setError(j?.error || 'Failed to create field')
                 return
               }
               setOpen(false)
-              setName(''); setKey(''); setDatatype('text'); setSortOrder(0)
+              setName('')
+              setKey('')
+              setDatatype('text')
               router.refresh()
             })
           }}
-          className="grid gap-3"
         >
-          <div className="field">
-            <label className="label">Name (label)</label>
-            <Input value={name} onChange={(e)=>setName(e.target.value)} placeholder="e.g. Title" />
-          </div>
-          <div className="field">
-            <label className="label">Key (unique)</label>
-            <Input value={key} onChange={(e)=>setKey(e.target.value)} placeholder="e.g. title" />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="field">
-              <label className="label">Type</label>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="label">Display Name</label>
+              <Input value={name} onChange={(e)=>setName(e.target.value)} placeholder="e.g., Title" />
+            </div>
+            <div>
+              <label className="label">Key</label>
+              <Input value={key} onChange={(e)=>setKey(e.target.value)} placeholder="e.g., title" />
+            </div>
+            <div>
+              <label className="label">Data Type</label>
               <Select value={datatype} onChange={(e)=>setDatatype(e.target.value as any)}>
                 <option value="text">Text</option>
                 <option value="number">Number</option>
@@ -86,10 +62,6 @@ export default function FieldFormModal() {
                 <option value="date">Date</option>
                 <option value="json">JSON</option>
               </Select>
-            </div>
-            <div className="field">
-              <label className="label">Order</label>
-              <Input type="number" value={String(sortOrder)} onChange={(e)=>setSortOrder(Number(e.target.value))} />
             </div>
           </div>
 

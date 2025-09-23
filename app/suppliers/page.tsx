@@ -5,6 +5,7 @@ import { getCurrentWorkspaceId } from '@/lib/workspace'
 import SupplierEditModal from '@/components/SupplierEditModal'
 import Button from '@/components/ui/Button'
 import ReRunButton from '@/components/ReRunButton'
+import SupplierDeleteButton from '@/components/SupplierDeleteButton'
 
 export default async function SuppliersPage() {
   const supabase = await createSupabaseServerClient()
@@ -17,7 +18,7 @@ export default async function SuppliersPage() {
       <main className="min-h-screen flex items-center justify-center">
         <p>
           Please{' '}
-          <Link className="text-blue-600" href="/login">
+          <Link href="/login" className="text-blue-600">
             log in
           </Link>
           .
@@ -26,17 +27,14 @@ export default async function SuppliersPage() {
     )
   }
 
-  // 1) Try to get active workspace via your helper
   let wsId = await getCurrentWorkspaceId()
   let autoSelectedWorkspaceName: string | null = null
 
-  // 2) If none, auto-pick the first workspace the user belongs to as a graceful fallback
   if (!wsId) {
     const { data: firstWs, error: wsErr } = await supabase
       .from('workspace_members')
-      .select('workspace_id, workspaces ( name )')
+      .select('workspace_id, workspaces(name)')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: true })
       .limit(1)
       .maybeSingle()
 
@@ -73,11 +71,10 @@ export default async function SuppliersPage() {
     autoSelectedWorkspaceName = firstWs.workspaces?.name ?? null
   }
 
-  // 3) Load suppliers for resolved workspace
   const { data: suppliers, error } = await supabase
     .from('suppliers')
     .select(
-      'id, name, is_draft, source_type, endpoint_url, source_path, schedule, created_at, uid_source_key'
+      'id, display_no, name, is_draft, source_type, endpoint_url, source_path, schedule, created_at, uid_source_key'
     )
     .eq('workspace_id', wsId)
     .order('is_draft', { ascending: false })
@@ -95,10 +92,22 @@ export default async function SuppliersPage() {
     )
   }
 
-  // 4) Recent ingestion status per supplier (first/latest finished row wins)
-  let lastStatus = new Map<string, string>()
+  // User timezone for formatting
+  const { data: pref } = await supabase
+    .from('user_preferences')
+    .select('timezone')
+    .eq('user_id', user.id)
+    .maybeSingle()
+  const userTz = pref?.timezone || 'UTC'
+
+  // Minimal, robust approach (matches the earlier version that showed "pending"):
+  // - Fetch recent ingestions for these suppliers
+  // - Take the first row per supplier (ordered by finished_at DESC)
+  // - If status === 'completed' and finished_at exists => show formatted time + Success badge
+  // - Else => show the status string (pending/failed/...)
+  const lastDisplay = new Map<string, JSX.Element | string>()
   if (suppliers && suppliers.length > 0) {
-    const { data: recentIngestions } = await supabase
+    const { data: ingRows } = await supabase
       .from('feed_ingestions')
       .select('supplier_id, status, finished_at')
       .in(
@@ -107,10 +116,40 @@ export default async function SuppliersPage() {
       )
       .order('finished_at', { ascending: false })
 
-    if (recentIngestions) {
-      for (const row of recentIngestions) {
-        if (!lastStatus.has(row.supplier_id)) {
-          lastStatus.set(row.supplier_id, row.status || 'pending')
+    if (ingRows && ingRows.length) {
+      for (const row of ingRows) {
+        if (lastDisplay.has(row.supplier_id)) continue
+
+        const status = (row.status || '').toString().toLowerCase()
+        const isCompleted = status === 'completed' && row.finished_at
+
+        if (isCompleted) {
+          const ts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: userTz,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          })
+            .format(new Date(row.finished_at as any))
+            .replace(',', '') // -> "YYYY-MM-DD HH:mm"
+
+          lastDisplay.set(
+            row.supplier_id,
+            (
+              <div className="flex items-center gap-2">
+                <span className="font-mono">{ts}</span>
+                <span className="inline-block rounded bg-green-100 text-green-800 px-2 py-0.5 text-xs">
+                  Success
+                </span>
+              </div>
+            )
+          )
+        } else {
+          // show raw status (e.g., pending/failed)
+          lastDisplay.set(row.supplier_id, status || '—')
         }
       }
     }
@@ -127,7 +166,6 @@ export default async function SuppliersPage() {
           </Link>
         </div>
 
-        {/* Notice when we auto-selected a workspace */}
         {autoSelectedWorkspaceName && (
           <div className="rounded border bg-yellow-50 text-yellow-900 px-3 py-2">
             No active workspace was selected. Showing data for{' '}
@@ -137,7 +175,7 @@ export default async function SuppliersPage() {
         )}
 
         {/* Table */}
-        <div className="rounded-2xl border p-6 bg-card">
+        <div>
           <h2 className="text-xl font-semibold mb-3">
             Suppliers in this workspace
           </h2>
@@ -151,6 +189,7 @@ export default async function SuppliersPage() {
               <table className="table">
                 <thead className="thead">
                   <tr>
+                    <th className="th">ID</th>
                     <th className="th">Name</th>
                     <th className="th">Type</th>
                     <th className="th">Source</th>
@@ -161,8 +200,9 @@ export default async function SuppliersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {suppliers?.map((s: any) => (
+                  {suppliers?.map((s: any, idx: number) => (
                     <tr key={s.id} className="border-b last:border-b-0">
+                      <td className="td font-mono text-xs">{s.display_no ?? idx + 1}</td>
                       <td className="td">
                         {s.name || '—'}
                         {s.is_draft ? (
@@ -179,27 +219,36 @@ export default async function SuppliersPage() {
                       </td>
                       <td className="td">{s.schedule || '—'}</td>
                       <td className="td">{s.uid_source_key || '—'}</td>
-                      <td className="td">{lastStatus.get(s.id) ?? '—'}</td>
+                      <td className="td">{lastDisplay.get(s.id) ?? '—'}</td>
                       <td className="td">
                         <div className="flex flex-wrap items-center gap-2">
                           {s.is_draft ? (
-                            <Link
-                              href={`/suppliers/new?supplier=${s.id}`}
-                              className="btn"
-                            >
-                              Resume setup
-                            </Link>
+                            <>
+                              {/* Resume draft setup */}
+                              <Link
+                                href={`/suppliers/new?supplier=${s.id}`}
+                                className="btn"
+                              >
+                                Resume setup
+                              </Link>
+
+                              {/* Delete draft (with confirm) */}
+                              <SupplierDeleteButton id={s.id} />
+                            </>
                           ) : (
                             <>
                               {/* Re-run import */}
                               <ReRunButton supplierId={s.id} />
 
-                              {/* Map fields */}
+                              {/* Delete completed supplier (with confirm) */}
+                              <SupplierDeleteButton id={s.id} />
+
+                              {/* Field mapping */}
                               <Link
                                 href={`/suppliers/${s.id}/map`}
                                 className="btn"
                               >
-                                Map fields
+                                Field mapping
                               </Link>
 
                               {/* View items */}
@@ -216,34 +265,8 @@ export default async function SuppliersPage() {
                                 View raw
                               </Link>
 
-                              {/* Edit basic fields */}
+                              {/* Settings */}
                               <SupplierEditModal supplier={s} />
-
-                              {/* Delete */}
-                              <form
-                                action={async (formData) => {
-                                  'use server'
-                                  const {
-                                    deleteSupplierAction,
-                                  } = await import(
-                                    '../(dashboard)/actions/supplierActions'
-                                  )
-                                  return deleteSupplierAction(formData)
-                                }}
-                              >
-                                <input
-                                  type="hidden"
-                                  name="supplier_id"
-                                  value={s.id}
-                                />
-                                <Button
-                                  variant="danger"
-                                  aria-label="Delete supplier"
-                                  className="cursor-pointer"
-                                >
-                                  Delete
-                                </Button>
-                              </form>
                             </>
                           )}
                         </div>

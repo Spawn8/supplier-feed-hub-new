@@ -8,7 +8,7 @@ export async function GET() {
   if (!wsId) return NextResponse.json({ fields: [] })
   const { data, error } = await supabase
     .from('custom_fields')
-    .select('key, name')
+    .select('id, key, name, datatype, sort_order')
     .eq('workspace_id', wsId)
     .order('sort_order', { ascending: true })
   if (error) return NextResponse.json({ fields: [] })

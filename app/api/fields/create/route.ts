@@ -14,16 +14,31 @@ export async function POST(req: Request) {
     const body = await req.json().catch(()=> ({}))
     const name = String(body?.name || '').trim()
     const key = String(body?.key || '').trim()
-    const datatype = (body?.datatype || 'text').toString()
-    const sort_order = Number(body?.sort_order || 0)
+    const datatype = (['text','number','bool','date','json'] as const).includes(body?.datatype)
+      ? body.datatype
+      : 'text'
 
     if (!name || !key) {
       return NextResponse.json({ error: 'Name and key are required' }, { status: 400 })
     }
 
+    // Determine next sort_order automatically
+    const { data: maxRow } = await supabase
+      .from('custom_fields')
+      .select('sort_order')
+      .eq('workspace_id', wsId)
+      .order('sort_order', { ascending: false })
+      .limit(1)
+      .single()
+
+    const nextSortOrder = (maxRow?.sort_order ?? 0) + 1
+
     const { error } = await supabase.from('custom_fields').insert({
       workspace_id: wsId,
-      name, key, datatype, sort_order
+      name,
+      key,
+      datatype,
+      sort_order: nextSortOrder,
     })
     if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 

@@ -10,6 +10,7 @@ import { updateSupplierAction, type UpdateSupplierState } from '@/app/(dashboard
 type Supplier = {
   id: string
   name: string
+  uid_source_key?: string | null
   source_type: 'url' | 'upload'
   endpoint_url: string | null
   schedule: string | null
@@ -32,15 +33,17 @@ export default function SupplierEditModal({ supplier }: { supplier: Supplier }) 
 
   useEffect(() => { if (state?.ok) setOpen(false) }, [state?.ok])
 
-  const valid = name.trim().length > 0 && ((sourceType === 'url' && endpointUrl.trim()) || sourceType === 'upload')
+  const valid =
+    name.trim().length > 0 &&
+    ((sourceType === 'url' && endpointUrl.trim()) || sourceType === 'upload')
 
   return (
     <>
-      <Button onClick={() => setOpen(true)}>Edit</Button>
+      <Button onClick={() => setOpen(true)}>Settings</Button>
 
       <Modal
         open={open}
-        title="Edit supplier"
+        title="Supplier settings"
         onClose={() => setOpen(false)}
         footer={
           <>
@@ -87,24 +90,34 @@ export default function SupplierEditModal({ supplier }: { supplier: Supplier }) 
             </div>
           </div>
 
+          {/* UID source (locked) */}
+          <div className="field">
+            <label className="label">UID source (locked)</label>
+            <Input value={supplier.uid_source_key || ''} readOnly disabled />
+          </div>
+
           {sourceType === 'url' && (
             <div className="field">
               <label className="label">Endpoint URL</label>
-              <Input value={endpointUrl} onChange={(e) => setEndpointUrl(e.target.value)} placeholder="https://example.com/feed.xml" />
+              <Input value={endpointUrl} onChange={(e) => setEndpointUrl(e.target.value)} placeholder="https://…" />
             </div>
           )}
 
           {sourceType === 'upload' && (
             <div className="field">
               <label className="label">Replace file (optional)</label>
-              <Input id={`edit-file-input-${supplier.id}`} name="file" type="file" accept=".xml,.csv,.json,application/xml,text/csv,application/json" />
+              <Input id={`edit-file-input-${supplier.id}`} type="file" accept=".xml,.csv,.json,application/xml,text/csv,application/json" />
             </div>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="field">
               <label className="label">Schedule</label>
-              <Input value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="e.g. hourly | 0 3 * * *" />
+              <Input
+                value={schedule}
+                onChange={(e) => setSchedule(e.target.value)}
+                placeholder="e.g. hourly | 0 3 * * *"
+              />
             </div>
             <div className="field">
               <label className="label">Auth username</label>

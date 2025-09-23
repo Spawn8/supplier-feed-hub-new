@@ -68,20 +68,20 @@ export async function POST(req: Request) {
   const draftName = `Draft (${host} ${hh}:${mm})`
 
   // Insert minimal supplier (name is required by your schema)
-  const { data, error } = await supabase
-    .from('suppliers')
-    .insert({
-      workspace_id,
-      name: draftName,                         // 👈 ensures NOT NULL is satisfied
-      source_type,
-      endpoint_url: source_type === 'url' ? (body.endpoint_url?.trim() || null) : null,
-      source_path: source_type === 'upload' ? (body.source_path || null) : null,
-      auth_username: body.auth_username || null,
-      auth_password: body.auth_password || null,
-      // schedule, uid_source_key are set later in the wizard
-    })
-    .select('id')
-    .single()
+const { data, error } = await supabase
+  .from('suppliers')
+  .insert({
+    workspace_id,
+    name: draftName,
+    is_draft: true,                  // 👈 mark draft
+    source_type,
+    endpoint_url: source_type === 'url' ? (body.endpoint_url?.trim() || null) : null,
+    source_path: source_type === 'upload' ? (body.source_path || null) : null,
+    auth_username: body.auth_username || null,
+    auth_password: body.auth_password || null,
+  })
+  .select('id')
+  .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 })
   return NextResponse.json({ id: data!.id })

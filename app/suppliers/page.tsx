@@ -77,15 +77,16 @@ export default async function SuppliersPage() {
   const { data: suppliers, error } = await supabase
     .from('suppliers')
     .select(
-      'id, name, source_type, endpoint_url, source_path, schedule, created_at, uid_source_key'
+      'id, name, is_draft, source_type, endpoint_url, source_path, schedule, created_at, uid_source_key'
     )
     .eq('workspace_id', wsId)
+    .order('is_draft', { ascending: false })
     .order('created_at', { ascending: false })
 
   if (error) {
     return (
       <main className="p-8">
-        <div className="max-w-5xl mx-auto">
+        <div className="max-5xl mx-auto">
           <div className="rounded border border-red-200 bg-red-50 text-red-700 px-3 py-2">
             Error loading suppliers: {error.message}
           </div>
@@ -130,14 +131,16 @@ export default async function SuppliersPage() {
         {autoSelectedWorkspaceName && (
           <div className="rounded border bg-yellow-50 text-yellow-900 px-3 py-2">
             No active workspace was selected. Showing data for{' '}
-            <strong>{autoSelectedWorkspaceName}</strong>.
-            Use the workspace switcher to change it.
+            <strong>{autoSelectedWorkspaceName}</strong>. Use the workspace
+            switcher to change it.
           </div>
         )}
 
         {/* Table */}
         <div className="rounded-2xl border p-6 bg-card">
-          <h2 className="text-xl font-semibold mb-3">Suppliers in this workspace</h2>
+          <h2 className="text-xl font-semibold mb-3">
+            Suppliers in this workspace
+          </h2>
 
           {!suppliers || suppliers.length === 0 ? (
             <div className="text-gray-600">
@@ -160,7 +163,14 @@ export default async function SuppliersPage() {
                 <tbody>
                   {suppliers?.map((s: any) => (
                     <tr key={s.id} className="border-b last:border-b-0">
-                      <td className="td">{s.name || '—'}</td>
+                      <td className="td">
+                        {s.name || '—'}
+                        {s.is_draft ? (
+                          <span className="ml-2 inline-block rounded bg-yellow-100 text-yellow-800 px-2 py-0.5 text-xs">
+                            Draft
+                          </span>
+                        ) : null}
+                      </td>
                       <td className="td">{s.source_type}</td>
                       <td className="td">
                         {s.source_type === 'url'
@@ -172,41 +182,70 @@ export default async function SuppliersPage() {
                       <td className="td">{lastStatus.get(s.id) ?? '—'}</td>
                       <td className="td">
                         <div className="flex flex-wrap items-center gap-2">
-                          {/* Re-run import */}
-                          <ReRunButton supplierId={s.id} />
-
-                          {/* Map fields */}
-                          <Link href={`/suppliers/${s.id}/map`} className="btn">
-                            Map fields
-                          </Link>
-
-                          {/* View items */}
-                          <Link href={`/suppliers/${s.id}/mapped`} className="btn">
-                            View mapped
-                          </Link>
-                          <Link href={`/suppliers/${s.id}/raw`} className="btn">
-                            View raw
-                          </Link>
-
-                          {/* Edit basic fields */}
-                          <SupplierEditModal supplier={s} />
-
-                          {/* Delete */}
-                          {/* Keep your server action path unchanged */}
-                          <form action={async (formData) => {
-                            'use server'
-                            const { deleteSupplierAction } = await import('../(dashboard)/actions/supplierActions')
-                            return deleteSupplierAction(formData)
-                          }}>
-                            <input type="hidden" name="supplier_id" value={s.id} />
-                            <Button
-                              variant="danger"
-                              aria-label="Delete supplier"
-                              className="cursor-pointer"
+                          {s.is_draft ? (
+                            <Link
+                              href={`/suppliers/new?supplier=${s.id}`}
+                              className="btn"
                             >
-                              Delete
-                            </Button>
-                          </form>
+                              Resume setup
+                            </Link>
+                          ) : (
+                            <>
+                              {/* Re-run import */}
+                              <ReRunButton supplierId={s.id} />
+
+                              {/* Map fields */}
+                              <Link
+                                href={`/suppliers/${s.id}/map`}
+                                className="btn"
+                              >
+                                Map fields
+                              </Link>
+
+                              {/* View items */}
+                              <Link
+                                href={`/suppliers/${s.id}/mapped`}
+                                className="btn"
+                              >
+                                View mapped
+                              </Link>
+                              <Link
+                                href={`/suppliers/${s.id}/raw`}
+                                className="btn"
+                              >
+                                View raw
+                              </Link>
+
+                              {/* Edit basic fields */}
+                              <SupplierEditModal supplier={s} />
+
+                              {/* Delete */}
+                              <form
+                                action={async (formData) => {
+                                  'use server'
+                                  const {
+                                    deleteSupplierAction,
+                                  } = await import(
+                                    '../(dashboard)/actions/supplierActions'
+                                  )
+                                  return deleteSupplierAction(formData)
+                                }}
+                              >
+                                <input
+                                  type="hidden"
+                                  name="supplier_id"
+                                  value={s.id}
+                                />
+                                <Button
+                                  variant="danger"
+                                  aria-label="Delete supplier"
+                                  className="cursor-pointer"
+                                >
+                                  Delete
+                                </Button>
+                              </form>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>

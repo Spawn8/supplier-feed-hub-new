@@ -1,4 +1,3 @@
-// app/api/suppliers/[id]/ingest/route.ts
 import { NextResponse } from 'next/server'
 import { Readable } from 'stream'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
@@ -10,9 +9,11 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
   const { id: routeId } = await ctx.params
   const supabase = await createSupabaseServerClient()
 
+  // Auth
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
+  // Supplier (+ uid_source_key)
   const { data: sup, error: supErr } = await supabase
     .from('suppliers')
     .select('id, workspace_id, source_type, endpoint_url, source_path, auth_username, auth_password, uid_source_key')
@@ -20,21 +21,26 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
     .single()
   if (supErr || !sup) return NextResponse.json({ error: supErr?.message || 'Supplier not found' }, { status: 404 })
   if (!sup.uid_source_key) {
-    return NextResponse.json({ error: 'UID source key is missing. Set it in step 3 (Unique Identifier) before importing.' }, { status: 400 })
+    return NextResponse.json({ error: 'UID source key is missing. Set it in step 3 of the wizard (Unique Identifier) before importing.' }, { status: 400 })
   }
 
+  // Prepare stream
   let stream: Readable
   let hint = ''
   let contentType = ''
 
   if (sup.source_type === 'url') {
     if (!sup.endpoint_url) return NextResponse.json({ error: 'endpoint_url is missing for URL source' }, { status: 400 })
+
     const headers: Record<string, string> = {}
     if (sup.auth_username && sup.auth_password) {
       headers.Authorization = 'Basic ' + Buffer.from(`${sup.auth_username}:${sup.auth_password}`).toString('base64')
     }
+
     const resp = await fetch(sup.endpoint_url, { headers })
-    if (!resp.ok) return NextResponse.json({ error: `Failed to fetch: ${resp.status} ${resp.statusText}` }, { status: 400 })
+    if (!resp.ok) {
+      return NextResponse.json({ error: `Failed to fetch: ${resp.status} ${resp.statusText}` }, { status: 400 })
+    }
     hint = sup.endpoint_url
     contentType = resp.headers.get('content-type') || ''
     const ab = await resp.arrayBuffer()
@@ -53,7 +59,7 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
   const type = detectFeedType(hint, contentType)
   const ingestion_id = crypto.randomUUID()
 
-  // 1) Insert a minimal ingestion row
+  // 1) Create feed_ingestions **with only guaranteed columns**
   {
     const { error } = await supabase.from('feed_ingestions').insert({
       id: ingestion_id,
@@ -63,7 +69,7 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
     if (error) {
       return NextResponse.json({ error: `Could not create feed_ingestions: ${error.message}` }, { status: 400 })
     }
-    // mark started
+    // Set started_at + pending
     await supabase.from('feed_ingestions').update({
       status: 'pending',
       started_at: new Date().toISOString(),
@@ -75,27 +81,39 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
     let stats
     if (type === 'csv') {
       stats = await ingestCSV({
-        stream, supabase, workspace_id: sup.workspace_id, supplier_id: sup.id,
-        ingestion_id, uid_source_key: sup.uid_source_key,
+        stream,
+        supabase,
+        workspace_id: sup.workspace_id,
+        supplier_id: sup.id,
+        ingestion_id,
+        uid_source_key: sup.uid_source_key,
         source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     } else if (type === 'json') {
       stats = await ingestJSON({
-        stream, supabase, workspace_id: sup.workspace_id, supplier_id: sup.id,
-        ingestion_id, uid_source_key: sup.uid_source_key,
+        stream,
+        supabase,
+        workspace_id: sup.workspace_id,
+        supplier_id: sup.id,
+        ingestion_id,
+        uid_source_key: sup.uid_source_key,
         source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     } else {
       stats = await ingestXMLBuffer({
-        stream, supabase, workspace_id: sup.workspace_id, supplier_id: sup.id,
-        ingestion_id, uid_source_key: sup.uid_source_key,
+        stream,
+        supabase,
+        workspace_id: sup.workspace_id,
+        supplier_id: sup.id,
+        ingestion_id,
+        uid_source_key: sup.uid_source_key,
         source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     }
 
     const nowIso = new Date().toISOString()
 
-    // 3) UPDATE with finished_at + status + counts **together** (for CHECK constraint)
+    // 3) UPDATE with finished_at + status + counts together (satisfy CHECK constraints)
     const { error: updErr } = await supabase.from('feed_ingestions').update({
       finished_at: nowIso,
       status: 'completed',
@@ -104,7 +122,7 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
       error_count: stats?.errors ?? 0,
     }).eq('id', ingestion_id)
 
-    // Fallback: if schema doesn’t have those columns, at least set status/finished_at
+    // Fallback if counts columns not present
     if (updErr) {
       await supabase.from('feed_ingestions').update({
         finished_at: nowIso,

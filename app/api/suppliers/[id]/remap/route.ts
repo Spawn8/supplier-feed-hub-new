@@ -15,21 +15,14 @@ function coerceDatatype(value: any, dt: string) {
         )
         return Number.isFinite(n) ? n : null
       }
-      case 'bool': {
+      case 'boolean': {
         if (typeof value === 'boolean') return value
-        const s = String(value).toLowerCase().trim()
-        if (['1','true','yes','y'].includes(s)) return true
-        if (['0','false','no','n'].includes(s)) return false
+        const s = String(value).trim().toLowerCase()
+        if (['true', '1', 'yes', 'y', 'on'].includes(s)) return true
+        if (['false', '0', 'no', 'n', 'off'].includes(s)) return false
         return null
       }
-      case 'date': {
-        const d = new Date(value)
-        return isNaN(d as unknown as number) ? null : d.toISOString()
-      }
-      case 'json': {
-        if (typeof value === 'object') return value
-        return JSON.parse(String(value))
-      }
+      case 'string':
       default:
         return String(value)
     }
@@ -38,87 +31,50 @@ function coerceDatatype(value: any, dt: string) {
   }
 }
 
-export async function POST(_req: Request, { params }: { params: { id: string } }) {
+export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params
   const supabase = await createSupabaseServerClient()
-  const { data: auth } = await supabase.auth.getUser()
-  if (!auth?.user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
-  // Load supplier (to get workspace_id)
+  // 1) Load supplier + workspace
   const { data: supplier, error: sErr } = await supabase
     .from('suppliers')
     .select('id, workspace_id')
-    .eq('id', params.id)
+    .eq('id', id)
     .single()
   if (sErr || !supplier) return NextResponse.json({ error: sErr?.message || 'Supplier not found' }, { status: 404 })
 
-  const wsId = supplier.workspace_id
-  const supplierId = supplier.id
-
-  // Load field definitions
+  // 2) Load fields (workspace schema)
   const { data: fields, error: fErr } = await supabase
     .from('custom_fields')
     .select('key, datatype')
-    .eq('workspace_id', wsId)
+    .eq('workspace_id', supplier.workspace_id)
     .order('sort_order', { ascending: true })
   if (fErr) return NextResponse.json({ error: fErr.message }, { status: 400 })
+  const defs: FieldDef[] = (fields || []) as any
 
-  const fieldDefs: FieldDef[] = fields || []
-  const fieldByKey = new Map(fieldDefs.map(f => [f.key, f]))
-
-  // Load mappings: source_key -> field_key
-  const { data: maps, error: mErr } = await supabase
-    .from('field_mappings')
-    .select('source_key, field_key')
-    .eq('workspace_id', wsId)
-    .eq('supplier_id', supplierId)
-  if (mErr) return NextResponse.json({ error: mErr.message }, { status: 400 })
-
-  const mapSrcToDst = new Map<string, string>()
-  for (const r of maps || []) {
-    mapSrcToDst.set(String(r.source_key).toLowerCase(), String(r.field_key))
-  }
-
-  // Pull recent raw items (you can remove the limit if you want to remap everything)
-  const { data: raws, error: rErr } = await supabase
+  // 3) Fetch latest raw rows for this supplier and map them
+  const { data: rawRows, error: rErr } = await supabase
     .from('products_raw')
-    .select('external_id, raw, source_file, ingestion_id')
-    .eq('workspace_id', wsId)
-    .eq('supplier_id', supplierId)
+    .select('id, external_id, fields, imported_at')
+    .eq('workspace_id', supplier.workspace_id)
+    .eq('supplier_id', supplier.id)
     .order('imported_at', { ascending: false })
-    .limit(5000)
+    .limit(2000)
   if (rErr) return NextResponse.json({ error: rErr.message }, { status: 400 })
 
-  // Build upsert payload for products_mapped
-  const payload = (raws || []).map((row) => {
-    const raw = row.raw && typeof row.raw === 'object' ? row.raw : {}
-    const flatRaw: Record<string, any> = Object.fromEntries(
-      Object.entries(raw).map(([k, v]) => [k.toLowerCase(), v])
-    )
-
-    const fields: Record<string, any> = {}
-
-    // 1) Apply explicit mappings
-    for (const [srcLower, dstFieldKey] of mapSrcToDst.entries()) {
-      const def = fieldByKey.get(dstFieldKey)
-      if (!def) continue
-      const rawVal = flatRaw[srcLower]
-      fields[def.key] = coerceDatatype(rawVal, def.datatype)
+  // 4) Transform rows to mapped schema
+  const payload = (rawRows || []).map((row: any) => {
+    const mapped: Record<string, any> = {}
+    for (const def of defs) {
+      const v = row.fields?.[def.key]
+      mapped[def.key] = coerceDatatype(v, def.datatype)
     }
-
-    // 2) Best-effort fill for unmapped fields by matching same-name key
-    for (const def of fieldDefs) {
-      if (fields[def.key] !== undefined) continue
-      const v = flatRaw[def.key.toLowerCase()]
-      fields[def.key] = coerceDatatype(v, def.datatype)
-    }
-
     return {
-      workspace_id: wsId,
-      supplier_id: supplierId,
-      ingestion_id: row.ingestion_id ?? null,
+      workspace_id: supplier.workspace_id,
+      supplier_id: supplier.id,
       external_id: row.external_id,
-      fields,
-      source_file: row.source_file ?? null,
+      fields: mapped,
+      imported_at: row.imported_at,
     }
   })
 

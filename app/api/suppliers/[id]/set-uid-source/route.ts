@@ -1,20 +1,19 @@
 import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params
   const supabase = await createSupabaseServerClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
-  const body = await req.json().catch(() => ({}))
-  const uid_source_key = (body?.uid_source_key || '').toString().trim()
-  if (!uid_source_key) return NextResponse.json({ error: 'uid_source_key is required' }, { status: 400 })
+  const { uid_source_key } = await req.json()
 
-  // Read current supplier to know if already locked
+  // Load existing to enforce immutability after set
   const { data: s, error: sErr } = await supabase
     .from('suppliers')
     .select('id, uid_source_key')
-    .eq('id', params.id)
+    .eq('id', id)
     .single()
   if (sErr || !s) return NextResponse.json({ error: sErr?.message || 'Supplier not found' }, { status: 404 })
   if (s.uid_source_key && s.uid_source_key !== uid_source_key) {
@@ -24,7 +23,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   const { error } = await supabase
     .from('suppliers')
     .update({ uid_source_key })
-    .eq('id', params.id)
+    .eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 400 })
 
   return NextResponse.json({ ok: true, uid_source_key })

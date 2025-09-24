@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 
-export async function PATCH(_: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params
   const supabase = await createSupabaseServerClient()
-  const body = await _.json()
+  const body = await req.json()
   const { name, schedule } = body
 
   const { error } = await supabase

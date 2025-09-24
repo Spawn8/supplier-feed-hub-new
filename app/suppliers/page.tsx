@@ -27,11 +27,10 @@ export default async function SuppliersPage() {
     )
   }
 
-  // 1) Try to get active workspace via your helper
+  // 1) Resolve workspace (fallback to first membership)
   let wsId = await getCurrentWorkspaceId()
   let autoSelectedWorkspaceName: string | null = null
 
-  // 2) If none, auto-pick the first workspace the user belongs to as a graceful fallback
   if (!wsId) {
     const { data: firstWs, error: wsErr } = await supabase
       .from('workspace_members')
@@ -74,7 +73,7 @@ export default async function SuppliersPage() {
     autoSelectedWorkspaceName = firstWs.workspaces?.name ?? null
   }
 
-  // 3) Load suppliers for resolved workspace
+  // 2) Load suppliers
   const { data: suppliers, error } = await supabase
     .from('suppliers')
     .select(
@@ -96,7 +95,7 @@ export default async function SuppliersPage() {
     )
   }
 
-  // User timezone for formatting Last Import (from user_preferences)
+  // 3) User timezone for formatting
   const { data: pref } = await supabase
     .from('user_preferences')
     .select('timezone')
@@ -114,8 +113,11 @@ export default async function SuppliersPage() {
       hour12: false,
     }).format(new Date(d as any)).replace(',', '')
 
-  // 4) Recent ingestion status per supplier (latest finished first; pending nulls last)
-  let lastStatus = new Map<string, any>()
+  // 4a) Recent ingestion status per supplier (finished first; pending nulls last)
+  const lastIngestion = new Map<
+    string,
+    { status: string; ts: string | null }
+  >()
   if (suppliers && suppliers.length > 0) {
     const { data: recentIngestions } = await supabase
       .from('feed_ingestions')
@@ -124,30 +126,74 @@ export default async function SuppliersPage() {
         'supplier_id',
         suppliers.map((s: any) => s.id)
       )
-      // Ensure pending (NULL finished_at) doesn't overshadow a completed row:
       .order('finished_at', { ascending: false, nullsFirst: false } as any)
       .order('started_at', { ascending: false })
 
     if (recentIngestions) {
       for (const row of recentIngestions) {
-        if (!lastStatus.has(row.supplier_id)) {
-          const status = (row.status || 'pending').toString().toLowerCase()
-          const when = row.finished_at || row.started_at || null
-          const ts = when ? fmtTs(when) : null
-          lastStatus.set(
-            row.supplier_id,
-            (
-              <div className="leading-tight">
-                <div className="capitalize">{status}</div>
-                <div className="font-mono text-xs text-gray-600">
-                  {ts || '—'}
-                </div>
-              </div>
-            )
-          )
+        if (lastIngestion.has(row.supplier_id)) continue
+        const finished = !!row.finished_at
+        const rawStatus = (row.status || '').toString().toLowerCase()
+        const status = finished
+          ? rawStatus === 'failed'
+            ? 'failed'
+            : 'pending' === rawStatus
+            ? 'completed' // safeguard
+            : rawStatus || 'completed'
+          : rawStatus || 'pending'
+        const when = row.finished_at || row.started_at || null
+        lastIngestion.set(row.supplier_id, {
+          status,
+          ts: when ? fmtTs(when) : null,
+        })
+      }
+    }
+  }
+
+  // 4b) Prefer *actual data written* to products_mapped:
+  //     if there is any mapped row, we show "completed" with the latest imported_at.
+  const lastMapped = new Map<string, string>()
+  if (suppliers && suppliers.length > 0) {
+    const { data: mappedRows } = await supabase
+      .from('products_mapped')
+      .select('supplier_id, imported_at')
+      .eq('workspace_id', wsId)
+      .in(
+        'supplier_id',
+        suppliers.map((s: any) => s.id)
+      )
+      .order('imported_at', { ascending: false })
+
+    if (mappedRows) {
+      for (const row of mappedRows) {
+        if (!lastMapped.has(row.supplier_id)) {
+          lastMapped.set(row.supplier_id, fmtTs(row.imported_at as any))
         }
       }
     }
+  }
+
+  // Helper to render the two-line cell
+  const renderLastImport = (supplierId: string) => {
+    const mappedTs = lastMapped.get(supplierId)
+    if (mappedTs) {
+      return (
+        <div className="leading-tight">
+          <div className="capitalize">completed</div>
+          <div className="font-mono text-xs text-gray-600">{mappedTs}</div>
+        </div>
+      )
+    }
+    const ing = lastIngestion.get(supplierId)
+    if (ing) {
+      return (
+        <div className="leading-tight">
+          <div className="capitalize">{ing.status || 'pending'}</div>
+          <div className="font-mono text-xs text-gray-600">{ing.ts || '—'}</div>
+        </div>
+      )
+    }
+    return '—'
   }
 
   return (
@@ -212,7 +258,7 @@ export default async function SuppliersPage() {
                       </td>
                       <td className="td">{s.schedule || '—'}</td>
                       <td className="td">{s.uid_source_key || '—'}</td>
-                      <td className="td">{lastStatus.get(s.id) ?? '—'}</td>
+                      <td className="td">{renderLastImport(s.id)}</td>
                       <td className="td">
                         <div className="flex flex-wrap items-center gap-2">
                           {s.is_draft ? (

@@ -1,3 +1,4 @@
+// app/suppliers/[id]/raw/page.tsx
 import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
@@ -15,16 +16,16 @@ export default async function SupplierRawPage({ params }: { params: { id: string
   const [{ data: fields }, { data: items, error }] = await Promise.all([
     supabase
       .from('custom_fields')
-      .select('id, name, key, sort_order')
+      .select('id, key, name, sort_order')
       .eq('workspace_id', wsId)
       .order('sort_order', { ascending: true }),
     supabase
-      .from('products_mapped')
-      .select('id, uid, fields, imported_at')   // <-- uid kept for dedupe, not displayed
+      .from('products_raw')
+      .select('id, fields, imported_at')
       .eq('workspace_id', wsId)
       .eq('supplier_id', supplierId)
       .order('imported_at', { ascending: false })
-      .limit(300),
+      .limit(200),
   ])
 
   if (error) {
@@ -37,39 +38,36 @@ export default async function SupplierRawPage({ params }: { params: { id: string
     )
   }
 
-  const cols = fields ?? []
+  const cols = (fields ?? [])
 
   return (
     <main className="p-8">
       <div className="max-w-7xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Items</h1>
-          <div className="flex items-center gap-2">
-            <Link href={`/suppliers/${supplierId}/map`} className="btn">Map fields</Link>
-            <Link href="/suppliers" className="btn">Back</Link>
-          </div>
+          <h1 className="text-2xl font-semibold">Raw Items</h1>
+          <Link href={`/suppliers/${supplierId}/mapped`} className="btn">View Mapped</Link>
         </div>
 
         <div className="table-wrap">
           <table className="table">
             <thead className="thead">
-              <tr>
-                <th className="th">ID</th> {/* internal DB id */}
-                {cols.map((c: any) => (
-                  <th className="th" key={c.id}>{c.name}</th>
-                ))}
-                <th className="th">Imported</th>
-              </tr>
+              <tr>{[
+                <th key="__id" className="th">ID</th>,
+                ...cols.map((c: any) => (<th className="th" key={c.id}>{c.name}</th>)),
+                <th key="__imp" className="th">Imported</th>
+              ]}</tr>
             </thead>
             <tbody>
               {(items ?? []).map((row: any) => (
                 <tr key={row.id} className="border-b last:border-b-0">
-                  <td className="td">{row.id}</td>
-                  {cols.map((c: any) => {
-                    const v = row.fields?.[c.key]
-                    return <td className="td" key={c.id}>{v == null ? '—' : String(v)}</td>
-                  })}
-                  <td className="td">{new Date(row.imported_at).toLocaleString()}</td>
+                  {[
+                    <td key="__id" className="td">{row.id}</td>,
+                    ...cols.map((c: any) => {
+                      const v = row.fields?.[c.key]
+                      return <td className="td" key={c.id}>{v == null ? '—' : String(v)}</td>
+                    }),
+                    <td key="__imp" className="td">{new Date(row.imported_at).toLocaleString()}</td>
+                  ]}
                 </tr>
               ))}
             </tbody>

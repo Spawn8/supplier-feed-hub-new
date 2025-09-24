@@ -7,14 +7,12 @@ import { detectFeedType, ingestCSV, ingestJSON, ingestXMLBuffer } from '@/lib/in
 const UPLOADS_BUCKET = process.env.NEXT_PUBLIC_SUPPLIER_UPLOADS_BUCKET || 'supplier-uploads'
 
 export async function POST(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const { id: routeId } = await ctx.params // ← Next 15: params is a Promise
+  const { id: routeId } = await ctx.params
   const supabase = await createSupabaseServerClient()
 
-  // Auth
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
-  // Supplier (+ uid_source_key)
   const { data: sup, error: supErr } = await supabase
     .from('suppliers')
     .select('id, workspace_id, source_type, endpoint_url, source_path, auth_username, auth_password, uid_source_key')
@@ -22,26 +20,21 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
     .single()
   if (supErr || !sup) return NextResponse.json({ error: supErr?.message || 'Supplier not found' }, { status: 404 })
   if (!sup.uid_source_key) {
-    return NextResponse.json({ error: 'UID source key is missing. Set it in step 3 of the wizard (Unique Identifier) before importing.' }, { status: 400 })
+    return NextResponse.json({ error: 'UID source key is missing. Set it in step 3 (Unique Identifier) before importing.' }, { status: 400 })
   }
 
-  // Prepare stream
   let stream: Readable
   let hint = ''
   let contentType = ''
 
   if (sup.source_type === 'url') {
     if (!sup.endpoint_url) return NextResponse.json({ error: 'endpoint_url is missing for URL source' }, { status: 400 })
-
     const headers: Record<string, string> = {}
     if (sup.auth_username && sup.auth_password) {
       headers.Authorization = 'Basic ' + Buffer.from(`${sup.auth_username}:${sup.auth_password}`).toString('base64')
     }
-
     const resp = await fetch(sup.endpoint_url, { headers })
-    if (!resp.ok) {
-      return NextResponse.json({ error: `Failed to fetch: ${resp.status} ${resp.statusText}` }, { status: 400 })
-    }
+    if (!resp.ok) return NextResponse.json({ error: `Failed to fetch: ${resp.status} ${resp.statusText}` }, { status: 400 })
     hint = sup.endpoint_url
     contentType = resp.headers.get('content-type') || ''
     const ab = await resp.arrayBuffer()
@@ -60,17 +53,21 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
   const type = detectFeedType(hint, contentType)
   const ingestion_id = crypto.randomUUID()
 
-  // 1) Create feed_ingestions **with only guaranteed columns**
+  // 1) Insert a minimal ingestion row
   {
     const { error } = await supabase.from('feed_ingestions').insert({
       id: ingestion_id,
       workspace_id: sup.workspace_id,
       supplier_id: sup.id,
-      // intentionally not inserting columns your schema may not have (source_hint, status, etc.)
     })
     if (error) {
       return NextResponse.json({ error: `Could not create feed_ingestions: ${error.message}` }, { status: 400 })
     }
+    // mark started
+    await supabase.from('feed_ingestions').update({
+      status: 'pending',
+      started_at: new Date().toISOString(),
+    }).eq('id', ingestion_id)
   }
 
   try {
@@ -78,47 +75,49 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
     let stats
     if (type === 'csv') {
       stats = await ingestCSV({
-        stream,
-        supabase,
-        workspace_id: sup.workspace_id,
-        supplier_id: sup.id,
-        ingestion_id,
-        uid_source_key: sup.uid_source_key,
+        stream, supabase, workspace_id: sup.workspace_id, supplier_id: sup.id,
+        ingestion_id, uid_source_key: sup.uid_source_key,
         source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     } else if (type === 'json') {
       stats = await ingestJSON({
-        stream,
-        supabase,
-        workspace_id: sup.workspace_id,
-        supplier_id: sup.id,
-        ingestion_id,
-        uid_source_key: sup.uid_source_key,
+        stream, supabase, workspace_id: sup.workspace_id, supplier_id: sup.id,
+        ingestion_id, uid_source_key: sup.uid_source_key,
         source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     } else {
       stats = await ingestXMLBuffer({
-        stream,
-        supabase,
-        workspace_id: sup.workspace_id,
-        supplier_id: sup.id,
-        ingestion_id,
-        uid_source_key: sup.uid_source_key,
+        stream, supabase, workspace_id: sup.workspace_id, supplier_id: sup.id,
+        ingestion_id, uid_source_key: sup.uid_source_key,
         source_file: sup.source_type === 'upload' ? sup.source_path : undefined,
       })
     }
 
-    // 3) Optionally update counts if your schema has these columns (safe to call; unknown columns are ignored by PostgREST)
-    await supabase.from('feed_ingestions').update({
-      total_count: stats?.total ?? null,
-      ok_count: stats?.ok ?? null,
-      error_count: stats?.errors ?? null,
+    const nowIso = new Date().toISOString()
+
+    // 3) UPDATE with finished_at + status + counts **together** (for CHECK constraint)
+    const { error: updErr } = await supabase.from('feed_ingestions').update({
+      finished_at: nowIso,
+      status: 'completed',
+      total_count: stats?.total ?? 0,
+      ok_count: stats?.ok ?? 0,
+      error_count: stats?.errors ?? 0,
     }).eq('id', ingestion_id)
+
+    // Fallback: if schema doesn’t have those columns, at least set status/finished_at
+    if (updErr) {
+      await supabase.from('feed_ingestions').update({
+        finished_at: nowIso,
+        status: 'completed',
+      }).eq('id', ingestion_id)
+    }
 
     return NextResponse.json({ ok: true, ingestion_id, stats, type })
   } catch (e: any) {
-    // Mark error message if you have an error column (safe to call)
+    const nowIso = new Date().toISOString()
     await supabase.from('feed_ingestions').update({
+      finished_at: nowIso,
+      status: 'failed',
       error_message: e?.message || 'Ingestion failed',
     }).eq('id', ingestion_id)
 

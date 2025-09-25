@@ -1,35 +1,47 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Button from '@/components/ui/Button'
 
 export default function ReRunButton({ supplierId }: { supplierId: string }) {
   const router = useRouter()
-  const [msg, setMsg] = useState<string | null>(null)
-  const [isPending, start] = useTransition()
+  const [loading, setLoading] = useState(false)
+
+  const handleClick = async () => {
+    if (loading) return
+    setLoading(true)
+
+    // 1) Mark as running immediately (UI updates instantly)
+    try {
+      sessionStorage.setItem(`ingest:running:${supplierId}`, JSON.stringify({ startedAt: Date.now() }))
+      window.dispatchEvent(new CustomEvent('ingest:running', { detail: { supplierId } }))
+    } catch {}
+
+    try {
+      // 2) Trigger the ingestion on the server
+      await fetch(`/api/suppliers/${supplierId}/ingest`, {
+        method: 'POST',
+        cache: 'no-store',
+      })
+      // Let DB writes settle a tick
+      await new Promise((r) => setTimeout(r, 800))
+    } finally {
+      // 3) Clear the running flag BEFORE navigating back
+      try {
+        sessionStorage.removeItem(`ingest:running:${supplierId}`)
+        window.dispatchEvent(new CustomEvent('ingest:finished', { detail: { supplierId } }))
+      } catch {}
+
+      // 4) Hard refresh with cache-buster so the server-render shows the new Completed + timestamp
+      router.replace(`/suppliers?u=${Date.now()}`)
+      setLoading(false)
+    }
+  }
 
   return (
-    <div className="flex items-center gap-2">
-      <Button
-        onClick={() => {
-          setMsg(null)
-          start(async () => {
-            const res = await fetch(`/api/suppliers/${supplierId}/ingest`, { method: 'POST' })
-            if (!res.ok) {
-              const j = await res.json().catch(()=>({}))
-              setMsg(j?.error || 'Re-run failed')
-              return
-            }
-            setMsg('Re-run started')
-            router.refresh()
-          })
-        }}
-        disabled={isPending}
-      >
-        {isPending ? 'Re-running…' : 'Re-run'}
-      </Button>
-      {msg && <span className="text-sm text-muted">{msg}</span>}
-    </div>
+    <Button onClick={handleClick} disabled={loading}>
+      {loading ? 'Re-running…' : 'Re-run'}
+    </Button>
   )
 }

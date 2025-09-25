@@ -1,11 +1,27 @@
 // app/suppliers/page.tsx
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
 import SupplierEditModal from '@/components/SupplierEditModal'
-import Button from '@/components/ui/Button'
 import ReRunButton from '@/components/ReRunButton'
 import ConfirmSubmitButton from '@/components/ConfirmSubmitButton'
+import LastImportCell from '@/components/LastImportCell'
+
+// Robust date parsing for Postgres strings like "YYYY-MM-DD hh:mm:ss.sss+00"
+function toDateLike(v: unknown): Date | null {
+  if (!v && v !== 0) return null
+  if (v instanceof Date) return v
+  if (typeof v === 'number') return new Date(v)
+  const s = String(v)
+  const normalized = s.includes('T') ? s : s.replace(' ', 'T')
+  const ms = Date.parse(normalized)
+  if (!Number.isNaN(ms)) return new Date(ms)
+  const ms2 = Date.parse(s)
+  return Number.isNaN(ms2) ? null : new Date(ms2)
+}
 
 export default async function SuppliersPage() {
   const supabase = await createSupabaseServerClient()
@@ -17,17 +33,13 @@ export default async function SuppliersPage() {
     return (
       <main className="min-h-screen flex items-center justify-center">
         <p>
-          Please{' '}
-          <Link href="/login" className="text-blue-600">
-            log in
-          </Link>
-          .
+          Please <Link href="/login" className="text-blue-600">log in</Link>.
         </p>
       </main>
     )
   }
 
-  // 1) Resolve workspace (fallback to first membership)
+  // Resolve workspace (fallback to first membership)
   let wsId = await getCurrentWorkspaceId()
   let autoSelectedWorkspaceName: string | null = null
 
@@ -58,11 +70,7 @@ export default async function SuppliersPage() {
           <div className="text-center space-y-3">
             <h1 className="text-2xl font-semibold">No workspace found</h1>
             <p className="text-gray-600">
-              Go to{' '}
-              <Link href="/workspaces" className="text-blue-600">
-                Workspaces
-              </Link>{' '}
-              to create one.
+              Go to <Link href="/workspaces" className="text-blue-600">Workspaces</Link> to create one.
             </p>
           </div>
         </main>
@@ -73,12 +81,10 @@ export default async function SuppliersPage() {
     autoSelectedWorkspaceName = firstWs.workspaces?.name ?? null
   }
 
-  // 2) Load suppliers
+  // Load suppliers
   const { data: suppliers, error } = await supabase
     .from('suppliers')
-    .select(
-      'id, name, is_draft, source_type, endpoint_url, source_path, schedule, created_at, uid_source_key'
-    )
+    .select('id, name, is_draft, source_type, endpoint_url, source_path, schedule, created_at, uid_source_key')
     .eq('workspace_id', wsId)
     .order('is_draft', { ascending: false })
     .order('created_at', { ascending: false })
@@ -95,105 +101,116 @@ export default async function SuppliersPage() {
     )
   }
 
-  // 3) User timezone for formatting
+  // User timezone + formatter
   const { data: pref } = await supabase
     .from('user_preferences')
     .select('timezone')
     .eq('user_id', user.id)
     .maybeSingle()
   const userTz = pref?.timezone || 'UTC'
-  const fmtTs = (d: string | Date) =>
-    new Intl.DateTimeFormat('en-CA', {
+  const fmtTs = (d: unknown) => {
+    const dt = toDateLike(d)
+    if (!dt) return '—'
+    return new Intl.DateTimeFormat('en-CA', {
       timeZone: userTz,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
+      second: '2-digit',
       hour12: false,
-    }).format(new Date(d as any)).replace(',', '')
+    }).format(dt).replace(',', '')
+  }
 
-  // 4a) Recent ingestion status per supplier (finished first; pending nulls last)
-  const lastIngestion = new Map<
-    string,
-    { status: string; ts: string | null }
-  >()
+  // Latest ingestion rows (newest finished and newest pending)
+  type IngRow = {
+    supplier_id: string
+    status: string | null
+    finished_at: string | null
+    started_at: string | null
+  }
+
+  const latestFinished = new Map<string, IngRow>() // newest with finished_at
+  const latestPending = new Map<string, IngRow>()   // newest without finished_at
   if (suppliers && suppliers.length > 0) {
-    const { data: recentIngestions } = await supabase
+    const { data: ingRows } = await supabase
       .from('feed_ingestions')
       .select('supplier_id, status, finished_at, started_at')
-      .in(
-        'supplier_id',
-        suppliers.map((s: any) => s.id)
-      )
+      .in('supplier_id', suppliers.map((s: any) => s.id))
       .order('finished_at', { ascending: false, nullsFirst: false } as any)
       .order('started_at', { ascending: false })
 
-    if (recentIngestions) {
-      for (const row of recentIngestions) {
-        if (lastIngestion.has(row.supplier_id)) continue
-        const finished = !!row.finished_at
-        const rawStatus = (row.status || '').toString().toLowerCase()
-        const status = finished
-          ? rawStatus === 'failed'
-            ? 'failed'
-            : 'pending' === rawStatus
-            ? 'completed' // safeguard
-            : rawStatus || 'completed'
-          : rawStatus || 'pending'
-        const when = row.finished_at || row.started_at || null
-        lastIngestion.set(row.supplier_id, {
-          status,
-          ts: when ? fmtTs(when) : null,
-        })
+    if (ingRows) {
+      for (const row of ingRows as IngRow[]) {
+        if (row.finished_at) {
+          if (!latestFinished.has(row.supplier_id)) latestFinished.set(row.supplier_id, row)
+        } else {
+          if (!latestPending.has(row.supplier_id)) latestPending.set(row.supplier_id, row)
+        }
       }
     }
   }
 
-  // 4b) Prefer *actual data written* to products_mapped:
-  //     if there is any mapped row, we show "completed" with the latest imported_at.
+  // Latest mapped timestamp per supplier (used only as a completion signal)
   const lastMapped = new Map<string, string>()
   if (suppliers && suppliers.length > 0) {
     const { data: mappedRows } = await supabase
       .from('products_mapped')
       .select('supplier_id, imported_at')
       .eq('workspace_id', wsId)
-      .in(
-        'supplier_id',
-        suppliers.map((s: any) => s.id)
-      )
+      .in('supplier_id', suppliers.map((s: any) => s.id))
       .order('imported_at', { ascending: false })
 
     if (mappedRows) {
-      for (const row of mappedRows) {
-        if (!lastMapped.has(row.supplier_id)) {
-          lastMapped.set(row.supplier_id, fmtTs(row.imported_at as any))
+      for (const row of mappedRows as any[]) {
+        if (!lastMapped.has(row.supplier_id) && row.imported_at) {
+          lastMapped.set(row.supplier_id, String(row.imported_at))
         }
       }
     }
   }
 
-  // Helper to render the two-line cell
-  const renderLastImport = (supplierId: string) => {
-    const mappedTs = lastMapped.get(supplierId)
-    if (mappedTs) {
-      return (
-        <div className="leading-tight">
-          <div className="capitalize">completed</div>
-          <div className="font-mono text-xs text-gray-600">{mappedTs}</div>
-        </div>
-      )
+  // Build initial status/time for the client cell.
+  // IMPORTANT: We DO NOT emit "running" from the server.
+  // If any completion exists → Completed/Failed; else if there's a start only → Pending; else "—".
+  const lastDisplay = new Map<
+    string,
+    { status: 'completed' | 'failed' | 'pending' | '—'; timeStr: string }
+  >()
+
+  const computeDisplay = (supplierId: string) => {
+    const fin = latestFinished.get(supplierId)
+    const pen = latestPending.get(supplierId)
+    const mappedAt = lastMapped.get(supplierId)
+
+    const finMs = fin?.finished_at ? toDateLike(fin.finished_at)?.getTime() : null
+    const mapMs = mappedAt ? toDateLike(mappedAt)?.getTime() : null
+    const penMs = pen?.started_at ? toDateLike(pen.started_at)?.getTime() : null
+
+    // freshest completion time
+    const bestCompleteMs =
+      finMs !== null && mapMs !== null ? Math.max(finMs, mapMs) : (finMs ?? mapMs)
+
+    if (bestCompleteMs !== null) {
+      const newestIsFinished = finMs !== null && (mapMs === null || finMs >= mapMs)
+      const status = newestIsFinished
+        ? ((fin?.status || '').toLowerCase() === 'failed' ? 'failed' : 'completed')
+        : 'completed'
+      return { status, timeStr: fmtTs(bestCompleteMs) }
     }
-    const ing = lastIngestion.get(supplierId)
-    if (ing) {
-      return (
-        <div className="leading-tight">
-          <div className="capitalize">{ing.status || 'pending'}</div>
-          <div className="font-mono text-xs text-gray-600">{ing.ts || '—'}</div>
-        </div>
-      )
+
+    if (penMs !== null) {
+      return { status: 'pending' as const, timeStr: fmtTs(penMs) }
     }
-    return '—'
+
+    return { status: '—' as const, timeStr: '—' }
+  }
+
+  if (suppliers) {
+    for (const s of suppliers as any[]) {
+      lastDisplay.set(s.id, computeDisplay(s.id))
+    }
   }
 
   return (
@@ -202,9 +219,7 @@ export default async function SuppliersPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold">Suppliers</h1>
-          <Link href="/suppliers/new" className="btn">
-            + Add Supplier
-          </Link>
+          <Link href="/suppliers/new" className="btn">+ Add Supplier</Link>
         </div>
 
         {autoSelectedWorkspaceName && (
@@ -217,14 +232,10 @@ export default async function SuppliersPage() {
 
         {/* Table */}
         <div className="rounded-2xl border p-6 bg-card">
-          <h2 className="text-xl font-semibold mb-3">
-            Suppliers in this workspace
-          </h2>
+          <h2 className="text-xl font-semibold mb-3">Suppliers in this workspace</h2>
 
           {!suppliers || suppliers.length === 0 ? (
-            <div className="text-gray-600">
-              No suppliers yet. Click “Add Supplier”.
-            </div>
+            <div className="text-gray-600">No suppliers yet. Click “Add Supplier”.</div>
           ) : (
             <div className="table-wrap">
               <table className="table">
@@ -240,111 +251,90 @@ export default async function SuppliersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {suppliers?.map((s: any) => (
-                    <tr key={s.id} className="border-b last:border-b-0">
-                      <td className="td">
-                        {s.name || '—'}
-                        {s.is_draft ? (
-                          <span className="ml-2 inline-block rounded bg-yellow-100 text-yellow-800 px-2 py-0.5 text-xs">
-                            Draft
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="td">{s.source_type}</td>
-                      <td className="td">
-                        {s.source_type === 'url'
-                          ? s.endpoint_url
-                          : s.source_path || '—'}
-                      </td>
-                      <td className="td">{s.schedule || '—'}</td>
-                      <td className="td">{s.uid_source_key || '—'}</td>
-                      <td className="td">{renderLastImport(s.id)}</td>
-                      <td className="td">
-                        <div className="flex flex-wrap items-center gap-2">
+                  {suppliers?.map((s: any) => {
+                    const disp = lastDisplay.get(s.id) || { status: '—' as const, timeStr: '—' }
+                    return (
+                      <tr key={s.id} className="border-b last:border-b-0">
+                        <td className="td">
+                          {s.name || '—'}
                           {s.is_draft ? (
-                            <>
-                              <Link
-                                href={`/suppliers/new?supplier=${s.id}`}
-                                className="btn"
-                              >
-                                Resume setup
-                              </Link>
+                            <span className="ml-2 inline-block rounded bg-yellow-100 text-yellow-800 px-2 py-0.5 text-xs">
+                              Draft
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="td">{s.source_type}</td>
+                        <td className="td">
+                          {s.source_type === 'url' ? s.endpoint_url : s.source_path || '—'}
+                        </td>
+                        <td className="td">{s.schedule || '—'}</td>
+                        <td className="td">{s.uid_source_key || '—'}</td>
+                        <td className="td">
+                          <LastImportCell
+                            supplierId={s.id}
+                            initialStatus={disp.status}
+                            initialTime={disp.timeStr}
+                          />
+                        </td>
+                        <td className="td">
+                          <div className="flex flex-wrap items-center gap-2">
+                            {s.is_draft ? (
+                              <>
+                                <Link href={`/suppliers/new?supplier=${s.id}`} className="btn">
+                                  Resume setup
+                                </Link>
 
-                              {/* Delete (draft) */}
-                              <form
-                                action={async (formData) => {
-                                  'use server'
-                                  const {
-                                    deleteSupplierAction,
-                                  } = await import(
-                                    '../(dashboard)/actions/supplierActions'
-                                  )
-                                  return deleteSupplierAction(formData)
-                                }}
-                              >
-                                <input
-                                  type="hidden"
-                                  name="supplier_id"
-                                  value={s.id}
-                                />
-                                <ConfirmSubmitButton label="Delete" />
-                              </form>
-                            </>
-                          ) : (
-                            <>
-                              {/* Re-run import */}
-                              <ReRunButton supplierId={s.id} />
+                                {/* Delete (draft) */}
+                                <form
+                                  action={async (formData) => {
+                                    'use server'
+                                    const { deleteSupplierAction } = await import('../(dashboard)/actions/supplierActions')
+                                    return deleteSupplierAction(formData)
+                                  }}
+                                >
+                                  <input type="hidden" name="supplier_id" value={s.id} />
+                                  <ConfirmSubmitButton label="Delete" />
+                                </form>
+                              </>
+                            ) : (
+                              <>
+                                {/* Re-run import */}
+                                <ReRunButton supplierId={s.id} />
 
-                              {/* Map fields */}
-                              <Link
-                                href={`/suppliers/${s.id}/map`}
-                                className="btn"
-                              >
-                                Map fields
-                              </Link>
+                                {/* Map fields */}
+                                <Link href={`/suppliers/${s.id}/map`} className="btn">
+                                  Map fields
+                                </Link>
 
-                              {/* View items */}
-                              <Link
-                                href={`/suppliers/${s.id}/mapped`}
-                                className="btn"
-                              >
-                                View mapped
-                              </Link>
-                              <Link
-                                href={`/suppliers/${s.id}/raw`}
-                                className="btn"
-                              >
-                                View raw
-                              </Link>
+                                {/* View items */}
+                                <Link href={`/suppliers/${s.id}/mapped`} className="btn">
+                                  View mapped
+                                </Link>
+                                <Link href={`/suppliers/${s.id}/raw`} className="btn">
+                                  View raw
+                                </Link>
 
-                              {/* Edit basic fields */}
-                              <SupplierEditModal supplier={s} />
+                                {/* Settings */}
+                                <SupplierEditModal supplier={s} />
 
-                              {/* Delete */}
-                              <form
-                                action={async (formData) => {
-                                  'use server'
-                                  const {
-                                    deleteSupplierAction,
-                                  } = await import(
-                                    '../(dashboard)/actions/supplierActions'
-                                  )
-                                  return deleteSupplierAction(formData)
-                                }}
-                              >
-                                <input
-                                  type="hidden"
-                                  name="supplier_id"
-                                  value={s.id}
-                                />
-                                <ConfirmSubmitButton label="Delete" />
-                              </form>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                                {/* Delete */}
+                                <form
+                                  action={async (formData) => {
+                                    'use server'
+                                    const { deleteSupplierAction } = await import('../(dashboard)/actions/supplierActions')
+                                    return deleteSupplierAction(formData)
+                                  }}
+                                >
+                                  <input type="hidden" name="supplier_id" value={s.id} />
+                                  <ConfirmSubmitButton label="Delete" />
+                                </form>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

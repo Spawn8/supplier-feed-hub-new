@@ -90,10 +90,20 @@ export default function SupplierEditModal({ supplier }: { supplier: Supplier }) 
             </div>
           </div>
 
-          {/* UID source (locked) */}
+          {/* UID source (locked after first import) */}
           <div className="field">
-            <label className="label">UID source (locked)</label>
-            <Input value={supplier.uid_source_key || ''} readOnly disabled />
+            <label className="label">UID source {supplier.uid_source_key ? '(locked)' : '(required)'}</label>
+            <Input 
+              value={supplier.uid_source_key || ''} 
+              readOnly={!!supplier.uid_source_key} 
+              disabled={!!supplier.uid_source_key}
+              placeholder={supplier.uid_source_key ? '' : 'Set in supplier wizard'}
+            />
+            {supplier.uid_source_key && (
+              <p className="text-xs text-gray-500 mt-1">
+                Cannot be changed after first successful import
+              </p>
+            )}
           </div>
 
           {sourceType === 'url' && (

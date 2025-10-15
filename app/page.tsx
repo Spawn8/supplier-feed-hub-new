@@ -1,5 +1,6 @@
+import { redirect } from 'next/navigation'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
-import { getMyWorkspaces, getCurrentWorkspaceId } from '@/lib/workspace'
+import { getMyWorkspaces } from '@/lib/workspace'
 
 export default async function Home() {
   const supabase = await createSupabaseServerClient()
@@ -7,44 +8,29 @@ export default async function Home() {
 
   if (!user) {
     return (
-      <div className="p-8">
-        <h1 className="text-2xl font-semibold">Welcome to Supplier Feed Hub</h1>
-        <p>Please log in to continue.</p>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="max-w-md mx-auto text-center">
+          <h1 className="text-3xl font-bold text-gray-900 mb-4">Welcome to Supplier Feed Hub</h1>
+          <p className="text-lg text-gray-600 mb-8">Please log in to continue.</p>
+          <a 
+            href="/login" 
+            className="inline-flex items-center px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Sign In
+          </a>
+        </div>
       </div>
     )
   }
 
+  // Get user's workspaces
   const workspaces = await getMyWorkspaces()
-  const wsId = await getCurrentWorkspaceId()
 
-  return (
-    <div className="p-8">
-      <h1 className="text-2xl font-semibold mb-4">Dashboard</h1>
+  // If no workspaces, redirect to workspaces page for onboarding
+  if (workspaces.length === 0) {
+    redirect('/workspaces')
+  }
 
-      {workspaces.length === 0 && (
-        <div className="bg-yellow-50 border rounded p-6 max-w-md">
-          <h2 className="text-lg font-semibold mb-2">No workspaces yet</h2>
-          <p>Use the “+ New Workspace” button in the left sidebar.</p>
-        </div>
-      )}
-
-      {wsId && (
-        <div className="mt-6">
-          <p className="text-gray-700">
-            Active workspace ID: <span className="font-mono">{wsId}</span>
-          </p>
-        </div>
-      )}
-
-      <div className="mt-8 border rounded p-6">
-        <h2 className="text-xl font-semibold mb-3">Next steps</h2>
-        <ul className="list-disc ml-6 text-gray-700">
-          <li>Suppliers: add a feed (URL or upload)</li>
-          <li>Field mapping & category builder</li>
-          <li>Dedup by EAN + rule engine</li>
-          <li>Exports (CSV/XML/JSON)</li>
-        </ul>
-      </div>
-    </div>
-  )
+  // If user has workspaces, redirect to dashboard
+  redirect('/dashboard')
 }

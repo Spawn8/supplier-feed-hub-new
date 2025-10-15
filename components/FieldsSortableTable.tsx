@@ -1,106 +1,176 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
-import Button from '@/components/ui/Button'
-import FieldDeleteButton from '@/components/FieldDeleteButton'
+import { useState } from 'react'
+import FieldDeleteButton from './FieldDeleteButton'
 
-type Field = {
+interface CustomField {
   id: string
   name: string
   key: string
   datatype: string
+  description?: string
+  is_required: boolean
+  is_unique: boolean
   sort_order: number
+  created_at: string
+  updated_at: string
 }
 
-export default function FieldsSortableTable() {
-  const [fields, setFields] = useState<Field[]>([])
-  const [dragId, setDragId] = useState<string | null>(null)
-  const [isPending, start] = useTransition()
+interface FieldsSortableTableProps {
+  fields: CustomField[]
+  onReorder: (newOrder: Array<{ id: string; sort_order: number }>) => void
+  onEdit: (field: CustomField) => void
+  onDelete: (fieldId: string) => void
+  onSelect?: (field: CustomField) => void
+}
 
-  async function load() {
-    const res = await fetch('/api/fields/list', { cache: 'no-store' })
-    if (!res.ok) return
-    const j = await res.json().catch(()=>({ fields: [] }))
-    setFields(j.fields || [])
-  }
+export default function FieldsSortableTable({ 
+  fields, 
+  onReorder, 
+  onEdit, 
+  onDelete, 
+  onSelect 
+}: FieldsSortableTableProps) {
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
 
-  useEffect(()=>{ load() }, [])
-
-  function onDragStart(e: React.DragEvent<HTMLTableRowElement>, id: string) {
-    setDragId(id)
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedIndex(index)
     e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', id)
   }
 
-  function onDragOver(e: React.DragEvent<HTMLTableRowElement>) {
+  const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
   }
 
-  function onDrop(e: React.DragEvent<HTMLTableRowElement>, targetId: string) {
+  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
     e.preventDefault()
-    const sourceId = dragId || e.dataTransfer.getData('text/plain')
-    if (!sourceId || sourceId === targetId) return
-    const sourceIndex = fields.findIndex(f => f.id === sourceId)
-    const targetIndex = fields.findIndex(f => f.id === targetId)
-    if (sourceIndex === -1 || targetIndex === -1) return
-    const updated = fields.slice()
-    const [moved] = updated.splice(sourceIndex, 1)
-    updated.splice(targetIndex, 0, moved)
-    setFields(updated)
+    
+    if (draggedIndex === null || draggedIndex === dropIndex) {
+      setDraggedIndex(null)
+      return
+    }
+
+    const newFields = [...fields]
+    const draggedField = newFields[draggedIndex]
+    newFields.splice(draggedIndex, 1)
+    newFields.splice(dropIndex, 0, draggedField)
+
+    // Update sort orders
+    const newOrder = newFields.map((field, index) => ({
+      id: field.id,
+      sort_order: index + 1
+    }))
+
+    onReorder(newOrder)
+    setDraggedIndex(null)
   }
 
-  async function persistOrder() {
-    start(async ()=>{
-      const ids = fields.map(f => f.id)
-      await fetch('/api/fields/reorder', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
-      })
-      await load()
-    })
+  const getDataTypeColor = (datatype: string) => {
+    switch (datatype) {
+      case 'text':
+        return 'bg-blue-100 text-blue-800'
+      case 'number':
+        return 'bg-green-100 text-green-800'
+      case 'bool':
+        return 'bg-purple-100 text-purple-800'
+      case 'date':
+        return 'bg-orange-100 text-orange-800'
+      case 'json':
+        return 'bg-gray-100 text-gray-800'
+      default:
+        return 'bg-gray-100 text-gray-800'
+    }
   }
 
   return (
-    <div className="rounded border overflow-hidden">
-      <table className="w-full text-sm">
+    <div className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-gray-200">
         <thead className="bg-gray-50">
           <tr>
-            <th className="px-3 py-2 text-left w-8">#</th>
-            <th className="px-3 py-2 text-left">Name</th>
-            <th className="px-3 py-2 text-left">Key</th>
-            <th className="px-3 py-2 text-left">Type</th>
-            <th className="px-3 py-2 text-right">Actions</th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Field
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Type
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Properties
+            </th>
+            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Description
+            </th>
+            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Actions
+            </th>
           </tr>
         </thead>
-        <tbody>
-          {fields.map((f, idx) => (
+        <tbody className="bg-white divide-y divide-gray-200">
+          {fields.map((field, index) => (
             <tr
-              key={f.id}
+              key={field.id}
               draggable
-              onDragStart={(e)=>onDragStart(e, f.id)}
-              onDragOver={onDragOver}
-              onDrop={(e)=>onDrop(e, f.id)}
-              className="border-t hover:bg-gray-50 cursor-grab"
+              onDragStart={(e) => handleDragStart(e, index)}
+              onDragOver={handleDragOver}
+              onDrop={(e) => handleDrop(e, index)}
+              className={`hover:bg-gray-50 cursor-move ${
+                draggedIndex === index ? 'opacity-50' : ''
+              }`}
             >
-              <td className="px-3 py-2 align-middle text-gray-400">{idx+1}</td>
-              <td className="px-3 py-2 align-middle">{f.name}</td>
-              <td className="px-3 py-2 align-middle font-mono text-xs">{f.key}</td>
-              <td className="px-3 py-2 align-middle">{f.datatype}</td>
-              <td className="px-3 py-2 align-middle text-right">
-                <FieldDeleteButton id={f.id} />
+              <td className="px-6 py-4 whitespace-nowrap">
+                <div className="flex items-center">
+                  <svg className="w-4 h-4 text-gray-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                  </svg>
+                  <div>
+                    <div className="text-sm font-medium text-gray-900">{field.name}</div>
+                    <div className="text-sm text-gray-500">{field.key}</div>
+                  </div>
+                </div>
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap">
+                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getDataTypeColor(field.datatype)}`}>
+                  {field.datatype}
+                </span>
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap">
+                <div className="flex space-x-2">
+                  {field.is_required && (
+                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                      Required
+                    </span>
+                  )}
+                  {field.is_unique && (
+                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                      Unique
+                    </span>
+                  )}
+                </div>
+              </td>
+              <td className="px-6 py-4">
+                <div className="text-sm text-gray-900 max-w-xs truncate">
+                  {field.description || 'No description'}
+                </div>
+              </td>
+              <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                <div className="flex items-center justify-end space-x-2">
+                  <button
+                    onClick={() => onEdit(field)}
+                    className="text-blue-600 hover:text-blue-900"
+                  >
+                    Edit
+                  </button>
+                  <FieldDeleteButton 
+                    fieldId={field.id} 
+                    fieldName={field.name}
+                    onSuccess={() => onDelete(field.id)}
+                  />
+                </div>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-      <div className="p-3 flex items-center justify-between bg-gray-50 border-t">
-        <div className="text-xs text-gray-500">Drag rows to reorder. Order is saved when you click “Save Order”.</div>
-        <Button onClick={persistOrder} disabled={isPending}>
-          {isPending ? 'Saving…' : 'Save Order'}
-        </Button>
-      </div>
     </div>
   )
 }

@@ -1,127 +1,321 @@
 'use client'
 
-import { useState, useEffect, useRef, useActionState, useTransition } from 'react'
-import { useRouter } from 'next/navigation'
-import Modal from '@/components/ui/Modal'
-import Button from '@/components/ui/Button'
-import Input from '@/components/ui/Input'
-import Select from '@/components/ui/Select'
-import { createSupplierAction, type CreateSupplierState } from '@/app/(dashboard)/actions/supplierActions'
+import { useState, useEffect } from 'react'
+import Modal from './ui/Modal'
+import { useWorkspace } from '@/lib/workspaceContext'
 
-const initial: CreateSupplierState = {}
+interface SupplierFormModalProps {
+  isOpen: boolean
+  onClose: () => void
+  onSuccess: (supplier: any) => void
+  supplier?: any
+}
 
-export default function SupplierFormModal() {
-  const [open, setOpen] = useState(false)
-  const [sourceType, setSourceType] = useState<'url' | 'upload'>('url')
-  const [name, setName] = useState('')
-  const [endpointUrl, setEndpointUrl] = useState('')
-  const [schedule, setSchedule] = useState('')
-  const [authUsername, setAuthUsername] = useState('')
-  const [authPassword, setAuthPassword] = useState('')
-  const [state, formAction] = useActionState(createSupplierAction, initial)
-  const [isPending, startTransition] = useTransition()
-  const router = useRouter()
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
+export default function SupplierFormModal({ isOpen, onClose, onSuccess, supplier }: SupplierFormModalProps) {
+  const { activeWorkspaceId } = useWorkspace()
+  const [formData, setFormData] = useState({
+    name: supplier?.name || '',
+    description: supplier?.description || '',
+    source_type: supplier?.source_type || 'url',
+    endpoint_url: supplier?.endpoint_url || '',
+    auth_username: supplier?.auth_username || '',
+    auth_password: '',
+    schedule_cron: supplier?.schedule_cron || '',
+    schedule_enabled: supplier?.schedule_enabled || false
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
+  // Update form data when supplier prop changes
   useEffect(() => {
-    if (state?.ok) {
-      setOpen(false)
-      setName(''); setEndpointUrl(''); setSchedule(''); setAuthUsername(''); setAuthPassword('')
-      if (fileInputRef.current) fileInputRef.current.value = ''
-      router.refresh()
+    if (supplier) {
+      setFormData({
+        name: supplier.name || '',
+        description: supplier.description || '',
+        source_type: supplier.source_type || 'url',
+        endpoint_url: supplier.endpoint_url || '',
+        auth_username: supplier.auth_username || '',
+        auth_password: '', // Don't pre-fill password for security
+        schedule_cron: supplier.schedule_cron || '',
+        schedule_enabled: supplier.schedule_enabled || false
+      })
+    } else {
+      // Reset form for new supplier
+      setFormData({
+        name: '',
+        description: '',
+        source_type: 'url',
+        endpoint_url: '',
+        auth_username: '',
+        auth_password: '',
+        schedule_cron: '',
+        schedule_enabled: false
+      })
     }
-  }, [state?.ok, router])
+    setError(null) // Clear any previous errors
+  }, [supplier])
 
-  const valid = name.trim().length > 0 && ((sourceType === 'url' && endpointUrl.trim()) || sourceType === 'upload')
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    setError(null)
+
+    if (!activeWorkspaceId) {
+      setError('No workspace selected')
+      setLoading(false)
+      return
+    }
+
+    try {
+      const url = supplier ? `/api/suppliers/${supplier.id}/update-meta` : '/api/suppliers/create'
+      const method = supplier ? 'PUT' : 'POST'
+      
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...formData,
+          workspace_id: activeWorkspaceId
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || `Failed to ${supplier ? 'update' : 'create'} supplier`)
+      }
+
+      onSuccess(data.supplier)
+      onClose()
+      if (!supplier) {
+        setFormData({
+          name: '',
+          description: '',
+          source_type: 'url',
+          endpoint_url: '',
+          auth_username: '',
+          auth_password: '',
+          schedule_cron: '',
+          schedule_enabled: false
+        })
+      }
+    } catch (err) {
+      console.error(`Error ${supplier ? 'updating' : 'creating'} supplier:`, err)
+      setError(err instanceof Error ? err.message : `Failed to ${supplier ? 'update' : 'create'} supplier`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    const { name, value, type } = e.target
+    setFormData(prev => ({
+      ...prev,
+      [name]: type === 'checkbox' ? (e.target as HTMLInputElement).checked : value
+    }))
+  }
+
+  const commonCronExpressions = [
+    { value: '', label: 'Manual only' },
+    { value: '0 */1 * * *', label: 'Every hour' },
+    { value: '0 0 */6 * *', label: 'Every 6 hours' },
+    { value: '0 0 */12 * *', label: 'Every 12 hours' },
+    { value: '0 0 * * *', label: 'Daily at midnight' },
+    { value: '0 0 3 * *', label: 'Daily at 3:00 AM' },
+    { value: '0 0 * * 0', label: 'Weekly on Sunday' },
+    { value: '0 0 1 * *', label: 'Monthly on 1st' }
+  ]
 
   return (
-    <>
-      <Button variant="primary" onClick={() => setOpen(true)}>
-        + Add Supplier
-      </Button>
+    <Modal 
+      isOpen={isOpen} 
+      onClose={onClose} 
+      title={supplier ? 'Edit Supplier' : 'Add New Supplier'}
+    >
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-red-600 text-sm">{error}</p>
+          </div>
+        )}
 
-      <Modal
-        open={open}
-        title="Add a new supplier"
-        onClose={() => setOpen(false)}
-        footer={
+        <div>
+          <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
+            Supplier Name *
+          </label>
+          <input
+            type="text"
+            id="name"
+            name="name"
+            value={formData.name}
+            onChange={handleChange}
+            required
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            placeholder="My Supplier"
+          />
+        </div>
+
+        <div>
+          <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-2">
+            Description
+          </label>
+          <textarea
+            id="description"
+            name="description"
+            value={formData.description}
+            onChange={handleChange}
+            rows={3}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            placeholder="Brief description of this supplier..."
+          />
+        </div>
+
+        <div>
+          <label htmlFor="source_type" className="block text-sm font-medium text-gray-700 mb-2">
+            Source Type *
+          </label>
+          <select
+            id="source_type"
+            name="source_type"
+            value={formData.source_type}
+            onChange={handleChange}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="url">URL Feed</option>
+            <option value="upload">File Upload</option>
+          </select>
+        </div>
+
+        {formData.source_type === 'url' && (
           <>
-            <Button onClick={() => setOpen(false)}>Cancel</Button>
-            <Button
-              form="supplier-create-form"
-              type="submit"
-              variant="primary"
-              disabled={!valid || isPending}
-            >
-              {isPending ? 'Saving…' : 'Save'}
-            </Button>
+            <div>
+              <label htmlFor="endpoint_url" className="block text-sm font-medium text-gray-700 mb-2">
+                Endpoint URL *
+              </label>
+              <input
+                type="url"
+                id="endpoint_url"
+                name="endpoint_url"
+                value={formData.endpoint_url}
+                onChange={handleChange}
+                required
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="https://example.com/products.xml"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                URL to your product feed (XML, CSV, or JSON)
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="auth_username" className="block text-sm font-medium text-gray-700 mb-2">
+                  Username (Optional)
+                </label>
+                <input
+                  type="text"
+                  id="auth_username"
+                  name="auth_username"
+                  value={formData.auth_username}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="username"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="auth_password" className="block text-sm font-medium text-gray-700 mb-2">
+                  Password (Optional)
+                </label>
+                <input
+                  type="password"
+                  id="auth_password"
+                  name="auth_password"
+                  value={formData.auth_password}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
           </>
-        }
-      >
-        <form
-          id="supplier-create-form"
-          action={(fd: FormData) => {
-            fd.set('source_type', sourceType)
-            fd.set('name', name.trim())
-            fd.set('endpoint_url', endpointUrl.trim())
-            fd.set('schedule', schedule.trim())
-            fd.set('auth_username', authUsername.trim())
-            fd.set('auth_password', authPassword.trim())
-            startTransition(() => formAction(fd))
-          }}
-          className="grid gap-4"
-        >
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="field">
-              <label className="label">Name</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Supplier name" required />
-            </div>
+        )}
 
-            <div className="field">
-              <label className="label">Source Type</label>
-              <Select value={sourceType} onChange={(e) => setSourceType(e.target.value as 'url' | 'upload')}>
-                <option value="url">URL</option>
-                <option value="upload">Upload file</option>
-              </Select>
+        {formData.source_type === 'upload' && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <div className="flex items-center">
+              <svg className="w-5 h-5 text-blue-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-sm text-blue-700">
+                File upload functionality will be available after creating the supplier.
+              </p>
             </div>
           </div>
+        )}
 
-          {sourceType === 'url' && (
-            <div className="field">
-              <label className="label">Endpoint URL</label>
-              <Input value={endpointUrl} onChange={(e) => setEndpointUrl(e.target.value)} placeholder="https://example.com/feed.xml" />
-            </div>
-          )}
-
-          {sourceType === 'upload' && (
-            <div className="field">
-              <label className="label">Upload file (XML/CSV/JSON)</label>
-              <Input ref={fileInputRef} name="file" type="file" accept=".xml,.csv,.json,application/xml,text/csv,application/json" />
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="field">
-              <label className="label">Schedule</label>
-              <Input value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="e.g. hourly | 0 3 * * *" />
-            </div>
-            <div className="field">
-              <label className="label">Auth username</label>
-              <Input value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} />
-            </div>
-            <div className="field">
-              <label className="label">Auth password</label>
-              <Input type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} />
-            </div>
+        <div className="border-t pt-4">
+          <h3 className="text-sm font-medium text-gray-700 mb-4">Scheduling</h3>
+          
+          <div className="flex items-center mb-4">
+            <input
+              type="checkbox"
+              id="schedule_enabled"
+              name="schedule_enabled"
+              checked={formData.schedule_enabled}
+              onChange={handleChange}
+              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+            />
+            <label htmlFor="schedule_enabled" className="ml-2 text-sm text-gray-700">
+              Enable automatic syncing
+            </label>
           </div>
 
-          {state?.error && (
-            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
-              {state.error}
+          {formData.schedule_enabled && (
+            <div>
+              <label htmlFor="schedule_cron" className="block text-sm font-medium text-gray-700 mb-2">
+                Sync Frequency
+              </label>
+              <select
+                id="schedule_cron"
+                name="schedule_cron"
+                value={formData.schedule_cron}
+                onChange={handleChange}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                {commonCronExpressions.map((expr) => (
+                  <option key={expr.value} value={expr.value}>
+                    {expr.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Choose how often to sync this supplier's data
+              </p>
             </div>
           )}
-        </form>
-      </Modal>
-    </>
+        </div>
+
+        <div className="flex justify-end space-x-3 pt-4 border-t">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+            disabled={loading}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={loading || !formData.name.trim() || (formData.source_type === 'url' && !formData.endpoint_url.trim())}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {loading ? (supplier ? 'Updating...' : 'Creating...') : (supplier ? 'Update Supplier' : 'Create Supplier')}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }

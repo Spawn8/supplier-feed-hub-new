@@ -70,6 +70,7 @@ export async function createSupplierAction(
 
     // Upload file if needed
     let source_path: string | null = null
+    let uploaded_public_url: string | null = null
     if (sourceType === 'upload' && file) {
       const bytes = await file.arrayBuffer()
       const buf = Buffer.from(bytes)
@@ -88,6 +89,9 @@ export async function createSupplierAction(
       const { error: upErr } = await supabase.storage.from('feeds').upload(objectName, buf, { contentType })
       if (upErr) return { error: `Upload failed: ${upErr.message}` }
       source_path = objectName
+      // Generate a public URL so the file is immediately accessible in the UI
+      const { data: publicUrlData } = await supabase.storage.from('feeds').getPublicUrl(objectName)
+      uploaded_public_url = publicUrlData?.publicUrl || null
     }
 
     // Compute next display_no within this workspace
@@ -108,7 +112,7 @@ export async function createSupplierAction(
       workspace_id: wsId,
       name,
       source_type: sourceType,
-      endpoint_url: sourceType === 'url' ? endpointUrl : null,
+      endpoint_url: sourceType === 'url' ? endpointUrl : uploaded_public_url,
       source_path,
       schedule,
       auth_username: authUsername,
@@ -169,6 +173,7 @@ export async function updateSupplierAction(
     if (getErr) return { error: getErr.message }
 
     let source_path = supplier.source_path
+    let uploaded_public_url: string | null = null
     if (sourceType === 'upload' && file) {
       const bytes = await file.arrayBuffer()
       const buf = Buffer.from(bytes)
@@ -188,12 +193,14 @@ export async function updateSupplierAction(
       const { error: upErr } = await supabase.storage.from('feeds').upload(objectName, buf, { contentType, upsert: true })
       if (upErr) return { error: `Upload failed: ${upErr.message}` }
       source_path = objectName
+      const { data: publicUrlData } = await supabase.storage.from('feeds').getPublicUrl(objectName)
+      uploaded_public_url = publicUrlData?.publicUrl || null
     }
 
     const { error: updErr } = await supabase.from('suppliers').update({
       name,
       source_type: sourceType,
-      endpoint_url: sourceType === 'url' ? endpointUrl : null,
+      endpoint_url: sourceType === 'url' ? endpointUrl : uploaded_public_url,
       source_path,
       schedule,
       auth_username: authUsername,

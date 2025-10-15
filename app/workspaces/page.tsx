@@ -1,45 +1,84 @@
-// app/workspaces/page.tsx
-import Link from 'next/link'
-import { createSupabaseServerClient } from '@/lib/supabaseServer'
-import { getMyWorkspaces } from '@/lib/workspace'
-import WorkspaceList from './WorkspaceList'
+'use client'
+
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { createSupabaseBrowserClient } from '@/lib/supabaseClient'
+import WorkspaceList from '@/components/WorkspaceList'
 import WorkspaceFormModal from '@/components/WorkspaceFormModal'
 
-export default async function WorkspacesPage() {
-  const supabase = await createSupabaseServerClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+export default function WorkspacesPage() {
+  const [user, setUser] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const router = useRouter()
 
-  if (!user) {
+  useEffect(() => {
+    checkUser()
+  }, [])
+
+  const checkUser = async () => {
+    try {
+      const supabase = createSupabaseBrowserClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      
+      if (!user) {
+        router.push('/login')
+        return
+      }
+
+      setUser(user)
+    } catch (error) {
+      console.error('Error checking user:', error)
+      router.push('/login')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleWorkspaceSelect = (workspaceId: string) => {
+    router.push('/dashboard')
+  }
+
+  const handleCreateSuccess = (workspace: any) => {
+    // Switch to the new workspace
+    handleWorkspaceSelect(workspace.id)
+  }
+
+  if (loading) {
     return (
-      <main className="min-h-screen flex items-center justify-center">
-        <p>
-          Please{' '}
-          <Link className="text-blue-600 underline" href="/login">
-            log in
-          </Link>
-          .
-        </p>
-      </main>
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600"></div>
+      </div>
     )
   }
 
-  const workspaces = await getMyWorkspaces()
+  if (!user) {
+    return null
+  }
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="max-w-5xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-semibold">Workspaces</h1>
-          <WorkspaceFormModal />
+    <div className="workspaces-page min-h-screen bg-gray-50">
+      <div className="workspaces-container max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="workspaces-header text-center mb-8">
+          <h1 className="workspaces-title text-3xl font-bold text-gray-900">Your Workspaces</h1>
+          <p className="workspaces-subtitle mt-2 text-lg text-gray-600">
+            Manage your supplier feed workspaces
+          </p>
         </div>
 
-        <div className="rounded-2xl border p-6">
-          <h2 className="text-xl font-semibold mb-3">Your workspaces</h2>
-          <WorkspaceList workspaces={workspaces} />
+        <div className="workspaces-content">
+          <WorkspaceList
+            onWorkspaceSelect={handleWorkspaceSelect}
+            onCreateWorkspace={() => setShowCreateModal(true)}
+          />
         </div>
+
+        <WorkspaceFormModal
+          isOpen={showCreateModal}
+          onClose={() => setShowCreateModal(false)}
+          onSuccess={handleCreateSuccess}
+        />
       </div>
-    </main>
+    </div>
   )
 }

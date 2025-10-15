@@ -1,45 +1,94 @@
 import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
-import { setCurrentWorkspaceId } from '@/lib/workspace'
+import { logActivity } from '@/lib/auth'
+import { workspaceStore } from '../workspaces/route'
 
 export async function POST(req: Request) {
   try {
-    const formData = await req.formData()
-    const name = (formData.get('name') || '').toString().trim()
-    if (!name) {
-      return NextResponse.json({ error: 'Workspace name is required' }, { status: 400 })
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const supabase = await createSupabaseServerClient()
-    const { data: auth } = await supabase.auth.getUser()
-    const user = auth?.user
-    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    const body = await req.json()
+    const { name, description, default_currency, default_language, timezone, logo_url } = body
 
-    // 1) Create workspace
-    const { data: ws, error: wErr } = await supabase
+    // Validate required fields
+    if (!name) {
+      return NextResponse.json({ 
+        error: 'Workspace name is required' 
+      }, { status: 400 })
+    }
+
+    // Generate slug from name
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+
+    // Create workspace in database
+    console.log('Creating workspace in database...')
+    
+    const { data: workspace, error: workspaceError } = await supabase
       .from('workspaces')
-      .insert({ name, created_by: user.id })
-      .select('id')
+      .insert({
+        name,
+        slug: `${slug}-${Date.now()}`,
+        description,
+        default_currency: default_currency || 'USD',
+        default_language: default_language || 'en',
+        timezone: timezone || 'UTC',
+        logo_url: logo_url || null,
+        created_by: user.id
+      })
+      .select()
       .single()
 
-    if (wErr || !ws) {
-      return NextResponse.json({ error: wErr?.message || 'Failed to create workspace' }, { status: 400 })
+    if (workspaceError) {
+      console.error('Error creating workspace in database:', workspaceError)
+      return NextResponse.json({ 
+        error: `Database error: ${workspaceError.message}`,
+        details: workspaceError
+      }, { status: 400 })
     }
 
-    // 2) Add membership (owner)
-    const { error: mErr } = await supabase
-      .from('workspace_members')
-      .insert({ workspace_id: ws.id, user_id: user.id, role: 'owner' })
+    console.log('✅ Workspace created successfully in database:', workspace.id)
+    console.log('Workspace details:', JSON.stringify(workspace, null, 2))
 
-    if (mErr) {
-      return NextResponse.json({ error: mErr.message }, { status: 400 })
+    // Try to add user as workspace member
+    try {
+      await supabase
+        .from('workspace_members')
+        .insert({
+          workspace_id: workspace.id,
+          user_id: user.id,
+          role: 'owner'
+        })
+      console.log('✅ Workspace member created successfully')
+    } catch (memberError) {
+      console.log('Could not create workspace member:', memberError)
     }
 
-    // 3) Set active workspace cookie
-    await setCurrentWorkspaceId(ws.id)
+    // Try to log activity
+    try {
+      await logActivity(workspace.id, 'workspace_created', 'workspace', workspace.id, {
+        name: workspace.name
+      })
+      console.log('✅ Activity logged successfully')
+    } catch (activityError) {
+      console.log('Could not log activity:', activityError)
+    }
 
-    return NextResponse.json({ id: ws.id }, { status: 200 })
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || 'Unexpected error' }, { status: 500 })
+    return NextResponse.json({ 
+      success: true, 
+      workspace 
+    })
+  } catch (error: any) {
+    console.error('Error creating workspace:', error)
+    return NextResponse.json({ 
+      error: error.message || 'Internal server error' 
+    }, { status: 500 })
   }
 }

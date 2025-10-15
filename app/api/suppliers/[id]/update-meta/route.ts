@@ -1,21 +1,43 @@
 import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
+import { getCurrentWorkspaceId } from '@/lib/workspace'
+import { updateSupplier } from '@/lib/suppliers'
 
-export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params
-  const supabase = await createSupabaseServerClient()
-  const body = await req.json()
-  const { name, schedule } = body
+export async function PUT(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
 
-  const { error } = await supabase
-    .from('suppliers')
-    .update({
-      name,
-      schedule,
-      is_draft: false,   // 👈 mark complete
+    const supplierId = params.id
+    const body = await req.json()
+    
+    const { workspace_id, ...supplierData } = body
+    if (!workspace_id) {
+      return NextResponse.json({ error: 'Workspace ID is required' }, { status: 400 })
+    }
+
+    // Update supplier
+    const result = await updateSupplier(supplierId, supplierData)
+
+    if (!result.success) {
+      return NextResponse.json({ error: result.error }, { status: 400 })
+    }
+
+    return NextResponse.json({ 
+      success: true, 
+      supplier: result.supplier 
     })
-    .eq('id', id)
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 })
-  return NextResponse.json({ ok: true })
+  } catch (error: any) {
+    console.error('Error updating supplier metadata:', error)
+    return NextResponse.json({ 
+      error: error.message || 'Internal server error' 
+    }, { status: 500 })
+  }
 }

@@ -1,49 +1,85 @@
 import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
+import { getFieldMappings, saveFieldMappings } from '@/lib/fields'
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params
-  const supabase = await createSupabaseServerClient()
-  const wsId = await getCurrentWorkspaceId()
-  if (!wsId) return NextResponse.json({ error: 'No workspace' }, { status: 400 })
-  const { data, error } = await supabase
-    .from('field_mappings')
-    .select('source_key, field_key')
-    .eq('workspace_id', wsId)
-    .eq('supplier_id', id)
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 })
-  return NextResponse.json({ mappings: data || [] })
+export async function GET(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    // Try to get workspace_id from query params first, then fallback to cookies
+    const { searchParams } = new URL(req.url)
+    let workspaceId = searchParams.get('workspace_id')
+    
+    if (!workspaceId) {
+      workspaceId = await getCurrentWorkspaceId()
+    }
+    
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'Workspace ID is required' }, { status: 400 })
+    }
+
+    const supplierId = params.id
+
+    // Get field mappings
+    const mappings = await getFieldMappings(workspaceId, supplierId)
+
+    return NextResponse.json({ mappings })
+  } catch (error: any) {
+    console.error('Error fetching field mappings:', error)
+    return NextResponse.json({ 
+      error: error.message || 'Internal server error' 
+    }, { status: 500 })
+  }
 }
 
-export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params
-  const supabase = await createSupabaseServerClient()
-  const wsId = await getCurrentWorkspaceId()
-  if (!wsId) return NextResponse.json({ error: 'No workspace' }, { status: 400 })
+export async function POST(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
 
-  const body = await req.json()
-  const mappings = body?.mappings || {}
+    const workspaceId = await getCurrentWorkspaceId()
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'No workspace selected' }, { status: 400 })
+    }
 
-  // Clear existing
-  await supabase
-    .from('field_mappings')
-    .delete()
-    .eq('workspace_id', wsId)
-    .eq('supplier_id', id)
+    const supplierId = params.id
+    const body = await req.json()
+    const { mappings } = body
 
-  const rows = Object.entries(mappings)
-    .filter(([src, dst]) => src && dst)
-    .map(([src, dst]) => ({
-      workspace_id: wsId,
-      supplier_id: id,
-      source_key: src,
-      field_key: dst,
-    }))
+    if (!Array.isArray(mappings)) {
+      return NextResponse.json({ 
+        error: 'Mappings must be an array' 
+      }, { status: 400 })
+    }
 
-  if (rows.length > 0) {
-    const { error } = await supabase.from('field_mappings').insert(rows)
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 })
+    // Save field mappings
+    const result = await saveFieldMappings(workspaceId, supplierId, mappings)
+
+    if (!result.success) {
+      return NextResponse.json({ error: result.error }, { status: 400 })
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (error: any) {
+    console.error('Error saving field mappings:', error)
+    return NextResponse.json({ 
+      error: error.message || 'Internal server error' 
+    }, { status: 500 })
   }
-  return NextResponse.json({ ok: true })
 }

@@ -9,6 +9,7 @@ type Body = {
   source_path?: string | null
   auth_username?: string | null
   auth_password?: string | null
+  uid?: string | null
 }
 
 export async function POST(req: Request) {
@@ -17,6 +18,9 @@ export async function POST(req: Request) {
   // Auth
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+
+  // Record when creation started
+  const creationStartedAt = new Date().toISOString()
 
   // Body
   const body = (await req.json().catch(() => ({}))) as Body
@@ -67,6 +71,13 @@ export async function POST(req: Request) {
   } catch {}
   const draftName = `Draft (${host} ${hh}:${mm})`
 
+  // Get next supplier UID from per-workspace counter
+  const { data: seqVal, error: seqErr } = await supabase.rpc('allocate_supplier_uid', {
+    p_workspace_id: workspace_id
+  })
+  if (seqErr) return NextResponse.json({ error: seqErr.message }, { status: 400 })
+  const finalUid = String(seqVal)
+
   // Insert minimal supplier (name is required by your schema)
 const { data, error } = await supabase
   .from('suppliers')
@@ -79,6 +90,9 @@ const { data, error } = await supabase
     source_path: source_type === 'upload' ? (body.source_path || null) : null,
     auth_username: body.auth_username || null,
     auth_password: body.auth_password || null,
+    last_sync_status: 'never',
+    creation_started_at: creationStartedAt,
+    uid: finalUid
   })
   .select('id')
   .single()

@@ -1,18 +1,34 @@
 import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
+import { getCurrentWorkspaceId } from '@/lib/workspace'
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params
-  const supabase = await createSupabaseServerClient()
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
 
-  const { data: s, error } = await supabase
-    .from('suppliers')
-    .select('id, name, schedule, uid_source_key')
-    .eq('id', id)
-    .single()
+    const workspaceId = await getCurrentWorkspaceId()
+    if (!workspaceId) return NextResponse.json({ error: 'Workspace ID is required' }, { status: 400 })
 
-  if (error || !s)
-    return NextResponse.json({ error: error?.message || 'Not found' }, { status: 404 })
+    const { id } = await params
 
-  return NextResponse.json({ supplier: s })
+    const { data: supplier, error } = await supabase
+      .from('suppliers')
+      .select('*')
+      .eq('id', id)
+      .eq('workspace_id', workspaceId)
+      .single()
+
+    if (error || !supplier) {
+      return NextResponse.json({ error: error?.message || 'Supplier not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({ supplier })
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || 'Internal server error' }, { status: 500 })
+  }
 }

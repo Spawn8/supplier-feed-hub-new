@@ -1,8 +1,8 @@
 import './globals.css'
 import { Inter } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
+import { WorkspaceProvider } from '@/lib/workspaceContext'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
-import { getMyWorkspaces, getCurrentWorkspaceId } from '@/lib/workspace'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -15,24 +15,23 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   if (!user) {
     return (
       <html lang="en">
-        <body className={inter.className}>
+        <body className={inter.className} suppressHydrationWarning={true}>
           <main className="min-h-screen">{children}</main>
         </body>
       </html>
     )
   }
 
-  // Authenticated: show app chrome + sidebar
-  const workspaces = await getMyWorkspaces()
-  const wsId = await getCurrentWorkspaceId()
-
+  // Authenticated: show app chrome + sidebar with workspace context
   return (
     <html lang="en">
-      <body className={inter.className}>
-        <div className="flex">
-          <Sidebar logo="/logo.svg" workspaces={workspaces} activeWsId={wsId} />
-          <main className="flex-1 bg-gray-50 min-h-screen">{children}</main>
-        </div>
+      <body className={inter.className} suppressHydrationWarning={true}>
+        <WorkspaceProvider>
+          <div className="flex h-screen overflow-hidden" suppressHydrationWarning={true}>
+            <Sidebar logo="/logo.svg" />
+            <main className="flex-1 bg-gray-50 overflow-y-auto ml-64" suppressHydrationWarning={true}>{children}</main>
+          </div>
+        </WorkspaceProvider>
       </body>
     </html>
   )

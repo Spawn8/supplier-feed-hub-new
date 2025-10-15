@@ -1,43 +1,60 @@
 import { NextResponse } from 'next/server'
-import { revalidatePath } from 'next/cache'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
-import { getCurrentWorkspaceId } from '@/lib/workspace'
+import { deleteSupplier } from '@/lib/suppliers'
 
-export async function POST(req: Request) {
+export async function DELETE(req: Request) {
   try {
     const supabase = await createSupabaseServerClient()
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-
-    const wsId = await getCurrentWorkspaceId()
-    if (!wsId) return NextResponse.json({ error: 'No active workspace' }, { status: 400 })
-
-    const body = await req.json().catch(()=>({}))
-    const id = (body?.supplier_id || '').toString()
-    if (!id) return NextResponse.json({ error: 'Missing supplier id' }, { status: 400 })
-
-    const { data: supplier, error: getErr } = await supabase
-      .from('suppliers')
-      .select('id, source_type, source_path')
-      .eq('id', id)
-      .eq('workspace_id', wsId)
-      .single()
-    if (getErr) return NextResponse.json({ error: getErr.message }, { status: 400 })
-
-    const { error: delErr } = await supabase
-      .from('suppliers')
-      .delete()
-      .eq('id', id)
-      .eq('workspace_id', wsId)
-    if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 })
-
-    if (supplier?.source_type === 'upload' && supplier?.source_path) {
-      await supabase.storage.from('feeds').remove([supplier.source_path])
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    revalidatePath('/suppliers')
-    return NextResponse.json({ ok: true })
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || 'Unexpected error' }, { status: 500 })
+    const { searchParams } = new URL(req.url)
+    const supplierId = searchParams.get('id')
+
+    if (!supplierId) {
+      return NextResponse.json({ 
+        error: 'Supplier ID is required' 
+      }, { status: 400 })
+    }
+
+    // Fetch supplier to infer workspace and authorize user
+    const { data: supplier, error: supplierFetchError } = await supabase
+      .from('suppliers')
+      .select('id, workspace_id')
+      .eq('id', supplierId)
+      .single()
+
+    if (supplierFetchError || !supplier) {
+      return NextResponse.json({ error: 'Supplier not found' }, { status: 404 })
+    }
+
+    // Verify user is a member of the supplier's workspace
+    const { data: membership } = await supabase
+      .from('workspace_members')
+      .select('id')
+      .eq('workspace_id', supplier.workspace_id)
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    if (!membership) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // Delete supplier
+    const result = await deleteSupplier(supplierId)
+
+    if (!result.success) {
+      return NextResponse.json({ error: result.error }, { status: 400 })
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (error: any) {
+    console.error('Error deleting supplier:', error)
+    return NextResponse.json({ 
+      error: error.message || 'Internal server error' 
+    }, { status: 500 })
   }
 }

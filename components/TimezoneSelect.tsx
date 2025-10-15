@@ -1,89 +1,50 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
-import Button from '@/components/ui/Button'
+interface TimezoneSelectProps {
+  value: string
+  onChange: (timezone: string) => void
+  className?: string
+}
 
-export default function TimezoneSelect({ initialTz }: { initialTz: string }) {
-  const [tz, setTz] = useState<string>(initialTz)
-  const [options, setOptions] = useState<string[]>([])
-  const [isPending, start] = useTransition()
-  const [msg, setMsg] = useState<string | null>(null)
-  const [nowStr, setNowStr] = useState<string>('')
-
-  useEffect(() => {
-    try {
-      const supported = (Intl as any).supportedValuesOf
-        ? (Intl as any).supportedValuesOf('timeZone')
-        : []
-      if (Array.isArray(supported) && supported.length) {
-        setOptions(supported)
-      } else {
-        setOptions(['UTC','Europe/Athens','America/New_York','Europe/London','Asia/Tokyo'])
-      }
-    } catch {
-      setOptions(['UTC','Europe/Athens','America/New_York','Europe/London','Asia/Tokyo'])
-    }
-  }, [])
-
-  // Live clock: YYYY-MM-DD HH:mm:ss in selected timezone
-  useEffect(() => {
-    const formatNow = (zone: string) =>
-      new Intl.DateTimeFormat('en-CA', {
-        timeZone: zone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      }).format(new Date()).replace(',', '') // -> "YYYY-MM-DD HH:mm:ss"
-
-    setNowStr(formatNow(tz))
-    const id = setInterval(() => setNowStr(formatNow(tz)), 1000)
-    return () => clearInterval(id)
-  }, [tz])
-
-  async function save() {
-    setMsg(null)
-    start(async () => {
-      const res = await fetch('/api/account/timezone', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timezone: tz }),
-      })
-      if (!res.ok) {
-        const j = await res.json().catch(()=>({}))
-        setMsg(j?.error || 'Failed to save')
-      } else {
-        setMsg('Saved')
-      }
-    })
-  }
+export default function TimezoneSelect({ value, onChange, className = '' }: TimezoneSelectProps) {
+  const timezones = [
+    { value: 'UTC', label: 'UTC - Coordinated Universal Time' },
+    { value: 'America/New_York', label: 'America/New_York - Eastern Time' },
+    { value: 'America/Chicago', label: 'America/Chicago - Central Time' },
+    { value: 'America/Denver', label: 'America/Denver - Mountain Time' },
+    { value: 'America/Los_Angeles', label: 'America/Los_Angeles - Pacific Time' },
+    { value: 'Europe/London', label: 'Europe/London - Greenwich Mean Time' },
+    { value: 'Europe/Paris', label: 'Europe/Paris - Central European Time' },
+    { value: 'Europe/Berlin', label: 'Europe/Berlin - Central European Time' },
+    { value: 'Europe/Rome', label: 'Europe/Rome - Central European Time' },
+    { value: 'Europe/Madrid', label: 'Europe/Madrid - Central European Time' },
+    { value: 'Europe/Amsterdam', label: 'Europe/Amsterdam - Central European Time' },
+    { value: 'Europe/Stockholm', label: 'Europe/Stockholm - Central European Time' },
+    { value: 'Europe/Oslo', label: 'Europe/Oslo - Central European Time' },
+    { value: 'Europe/Copenhagen', label: 'Europe/Copenhagen - Central European Time' },
+    { value: 'Asia/Tokyo', label: 'Asia/Tokyo - Japan Standard Time' },
+    { value: 'Asia/Shanghai', label: 'Asia/Shanghai - China Standard Time' },
+    { value: 'Asia/Hong_Kong', label: 'Asia/Hong_Kong - Hong Kong Time' },
+    { value: 'Asia/Singapore', label: 'Asia/Singapore - Singapore Time' },
+    { value: 'Asia/Seoul', label: 'Asia/Seoul - Korea Standard Time' },
+    { value: 'Asia/Kolkata', label: 'Asia/Kolkata - India Standard Time' },
+    { value: 'Australia/Sydney', label: 'Australia/Sydney - Australian Eastern Time' },
+    { value: 'Australia/Melbourne', label: 'Australia/Melbourne - Australian Eastern Time' },
+    { value: 'Australia/Perth', label: 'Australia/Perth - Australian Western Time' },
+    { value: 'Pacific/Auckland', label: 'Pacific/Auckland - New Zealand Time' }
+  ]
 
   return (
-    <div className="space-y-3">
-      <div className="space-y-2">
-        <label className="label">Local timezone</label>
-        <select className="input" value={tz} onChange={(e)=>setTz(e.target.value)}>
-          {options.map((o) => (
-            <option key={o} value={o}>{o}</option>
-          ))}
-        </select>
-      </div>
-
-      {/* Live current time in the selected timezone */}
-      <div className="rounded border px-3 py-2 text-sm">
-        <div className="text-gray-600">Current time in <span className="font-mono">{tz}</span>:</div>
-        <div className="font-mono text-base">{nowStr}</div>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <Button type="button" onClick={save} disabled={isPending}>
-          {isPending ? 'Saving…' : 'Save'}
-        </Button>
-        {msg && <span className="text-sm text-gray-600">{msg}</span>}
-      </div>
-    </div>
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${className}`}
+    >
+      {timezones.map((timezone) => (
+        <option key={timezone.value} value={timezone.value}>
+          {timezone.label}
+        </option>
+      ))}
+    </select>
   )
 }

@@ -8,6 +8,7 @@
 import { SupabaseClient } from '@supabase/supabase-js'
 import { Readable } from 'stream'
 import { parse } from 'csv-parse'
+import { XMLParser } from 'fast-xml-parser'
 import { 
   allocateBatchUids, 
   batchInsertWithGlobalUids,
@@ -187,7 +188,12 @@ export async function ingestJSONWithGlobalUids(
       let sourceUid: string | undefined
       
       if (context.uid_source_key) {
-        sourceUid = item[context.uid_source_key]?.toString()
+        // Case-insensitive UID field lookup
+        const uidKeyLower = context.uid_source_key.toLowerCase()
+        const flatRaw = Object.fromEntries(
+          Object.entries(item ?? {}).map(([k, v]) => [k.toLowerCase(), v])
+        )
+        sourceUid = flatRaw[uidKeyLower]?.toString()
       } else {
         sourceUid = item.id || item.product_id || item.sku || item.ean
       }
@@ -241,7 +247,7 @@ export async function ingestJSONWithGlobalUids(
  */
 export async function ingestXMLWithGlobalUids(
   supabase: SupabaseClient,
-  xmlData: any,
+  xmlString: string,
   context: {
     workspace_id: string
     supplier_id: string
@@ -250,38 +256,88 @@ export async function ingestXMLWithGlobalUids(
     source_file?: string
   }
 ): Promise<IngestStats> {
-  // Extract products from XML (this would need to be implemented based on XML structure)
-  const products = extractProductsFromXML(xmlData)
+  // Parse XML string to object
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '' })
+  let doc: any
   
+  try {
+    doc = parser.parse(xmlString)
+  } catch (e) {
+    console.error('Failed to parse XML:', e)
+    return { total: 0, ok: 0, errors: 1, skipped: 0 }
+  }
+  
+  // Extract products from parsed XML
+  const products = extractProductsFromXML(doc)
+  
+  if (products.length === 0) {
+    console.warn('No products found in XML')
+    return { total: 0, ok: 0, errors: 0, skipped: 0 }
+  }
+  
+  console.log(`✅ Extracted ${products.length} products from XML`)
   return ingestJSONWithGlobalUids(supabase, products, context)
 }
 
 /**
- * Extract products from XML data
- * This is a placeholder - implementation depends on XML structure
+ * Extract products from parsed XML data
  */
-function extractProductsFromXML(xmlData: any): any[] {
-  // TODO: Implement XML parsing based on your XML structure
-  // This is a placeholder that assumes XML has a products array
-  if (Array.isArray(xmlData)) {
-    return xmlData
+function extractProductsFromXML(doc: any): any[] {
+  // If already an array, return it
+  if (Array.isArray(doc)) {
+    return doc
   }
   
-  if (xmlData.products && Array.isArray(xmlData.products)) {
-    return xmlData.products
-  }
+  // Try common XML product feed paths
+  const candidates = [
+    ['products', 'product'],
+    ['productfeed', 'product'],
+    ['rss', 'channel', 'item'],
+    ['items', 'item'],
+    ['catalog', 'product'],
+    ['channel', 'item'],
+    ['PRODUCTS', 'PRODUCT'],
+    ['CATALOG', 'PRODUCT'],
+  ]
   
-  if (xmlData.items && Array.isArray(xmlData.items)) {
-    return xmlData.items
-  }
-  
-  // If XML is an object, try to find array properties
-  for (const [key, value] of Object.entries(xmlData)) {
-    if (Array.isArray(value)) {
-      return value
+  for (const path of candidates) {
+    let cur: any = doc
+    let ok = true
+    for (const p of path) {
+      cur = cur?.[p]
+      if (cur === undefined) {
+        ok = false
+        break
+      }
+    }
+    if (ok) {
+      // Found products at this path
+      const items = Array.isArray(cur) ? cur : [cur]
+      console.log(`✅ Found ${items.length} products at path: ${path.join(' > ')}`)
+      return items
     }
   }
   
+  // Fallback: find first array in the document
+  function findFirstArray(obj: any): any[] | null {
+    if (!obj || typeof obj !== 'object') return null
+    for (const v of Object.values(obj)) {
+      if (Array.isArray(v)) return v as any[]
+      if (v && typeof v === 'object') {
+        const found = findFirstArray(v)
+        if (found) return found
+      }
+    }
+    return null
+  }
+  
+  const fallbackArray = findFirstArray(doc)
+  if (fallbackArray && fallbackArray.length > 0) {
+    console.log(`✅ Found ${fallbackArray.length} products via fallback search`)
+    return fallbackArray
+  }
+  
+  console.warn('No products array found in XML document')
   return []
 }
 

@@ -42,6 +42,39 @@ export async function GET(req: Request) {
       suppliers?.forEach(s => { suppliersMap[s.id] = s.name })
     }
 
+    // Get custom fields for this workspace
+    const { data: customFields } = await supabase
+      .from('custom_fields')
+      .select('id, name, key, datatype, is_visible')
+      .eq('workspace_id', workspaceId)
+      .order('sort_order', { ascending: true })
+
+    // Create a map for easy lookup
+    const customFieldsMap = new Map()
+    if (customFields) {
+      customFields.forEach(field => {
+        customFieldsMap.set(field.id, field)
+        customFieldsMap.set(field.key, field)
+      })
+    }
+
+    // Get field mappings for all suppliers in this workspace
+    const { data: fieldMappings } = await supabase
+      .from('field_mappings')
+      .select('source_key, field_key, supplier_id')
+      .eq('workspace_id', workspaceId)
+
+    // Create a map of supplier field mappings
+    const supplierFieldMappings: Record<string, Record<string, string>> = {}
+    if (fieldMappings) {
+      fieldMappings.forEach(mapping => {
+        if (!supplierFieldMappings[mapping.supplier_id]) {
+          supplierFieldMappings[mapping.supplier_id] = {}
+        }
+        supplierFieldMappings[mapping.supplier_id][mapping.source_key] = mapping.field_key
+      })
+    }
+
     // Lightweight search over common fields
     const filtered = (rows || []).filter(r => {
       if (!q) return true
@@ -50,19 +83,35 @@ export async function GET(req: Request) {
       return hay.includes(q)
     })
 
-    const products = filtered.map(r => ({
-      id: r.id,
-      uid: r.uid,
-      name: r.fields?.title || r.fields?.name || '',
-      ean: r.fields?.ean || '',
-      price: r.fields?.price ?? null,
-      supplier_id: r.supplier_id,
-      supplier_name: suppliersMap[r.supplier_id] || '—',
-      imported_at: r.imported_at,
-    }))
+    const products = filtered.map(r => {
+      const product: any = {
+        id: r.id,
+        uid: r.uid,
+        name: r.fields?.title || r.fields?.name || '',
+        ean: r.fields?.ean || '',
+        price: r.fields?.price ?? null,
+        supplier_id: r.supplier_id,
+        supplier_name: suppliersMap[r.supplier_id] || '—',
+        imported_at: r.imported_at,
+        fields: r.fields || {}
+      }
+
+      // Add all custom field values to the product
+      if (customFields) {
+        customFields.forEach(field => {
+          const fieldValue = r.fields?.[field.key]
+          if (fieldValue !== undefined) {
+            product[field.key] = fieldValue
+          }
+        })
+      }
+
+      return product
+    })
 
     return NextResponse.json({
       products,
+      customFields: customFields || [],
       pagination: {
         page,
         limit,

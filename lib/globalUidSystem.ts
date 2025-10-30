@@ -219,7 +219,88 @@ export async function generateFallbackUid(
 }
 
 /**
- * Enhanced batch insert with global UID allocation
+ * Helper to load field definitions
+ */
+async function loadFieldDefs(
+  supabase: SupabaseClient,
+  workspace_id: string
+): Promise<Array<{ id: string; key: string; datatype: string }>> {
+  const { data, error } = await supabase
+    .from('custom_fields')
+    .select('id, key, datatype')
+    .eq('workspace_id', workspace_id)
+    .order('sort_order', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+/**
+ * Helper to load field mappings
+ */
+async function loadFieldMappings(
+  supabase: SupabaseClient,
+  workspace_id: string,
+  supplier_id: string
+): Promise<Map<string, string[]>> {
+  const { data, error } = await supabase
+    .from('field_mappings')
+    .select('source_key, field_key')
+    .eq('workspace_id', workspace_id)
+    .eq('supplier_id', supplier_id)
+  if (error) throw error
+  const map = new Map<string, string[]>()
+  for (const r of data || []) {
+    const src = String((r as any)?.source_key || '').toLowerCase()
+    const dst = String((r as any)?.field_key || '')
+    if (!src || !dst) continue
+    const arr = map.get(src) || []
+    arr.push(dst)
+    map.set(src, arr)
+  }
+  return map
+}
+
+/**
+ * Helper to coerce datatypes
+ */
+function coerceDatatype(value: any, dt: string) {
+  if (value == null) return null
+  try {
+    switch (dt) {
+      case 'number': {
+        const n = Number(
+          typeof value === 'string'
+            ? value.replace(',', '.').replace(/[^\d.\-]/g, '')
+            : value
+        )
+        return Number.isFinite(n) ? n : null
+      }
+      case 'bool': {
+        if (typeof value === 'boolean') return value
+        const s = String(value).toLowerCase().trim()
+        if (['1', 'true', 'yes', 'y'].includes(s)) return true
+        if (['0', 'false', 'no', 'n'].includes(s)) return false
+        return null
+      }
+      case 'date': {
+        const d = new Date(value)
+        return isNaN(d as unknown as number) ? null : d.toISOString()
+      }
+      case 'json': {
+        if (typeof value === 'object') return value
+        return JSON.parse(String(value))
+      }
+      default:
+        return String(value)
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Simplified batch insert - only stores in products_mapped with field mapping
+ * No products_raw or products_final - single source of truth approach
  */
 export async function batchInsertWithGlobalUids(
   supabase: SupabaseClient,
@@ -235,52 +316,87 @@ export async function batchInsertWithGlobalUids(
   }
 ): Promise<{ success: boolean; error?: string; allocatedUids?: string[] }> {
   try {
-    // Allocate UIDs for all rows
-    const uidResult = await allocateBatchUids(
-      supabase,
-      context.workspace_id,
-      rows.length
-    )
+    const { workspace_id, supplier_id, ingestion_id, source_file } = context
+    
+    // Load field definitions and mappings
+    const fieldDefs = await loadFieldDefs(supabase, workspace_id)
+    const fieldByKey = new Map(fieldDefs.map((f) => [f.key, f]))
+    const mappings = await loadFieldMappings(supabase, workspace_id, supplier_id)
 
-    if (!uidResult.success || !uidResult.uids) {
-      return { success: false, error: uidResult.error || 'Failed to allocate UIDs' }
-    }
+    // Create products_mapped directly with field mappings applied
+    const mappedPayload = rows.map((row, index) => {
+      // Use sourceUid if available, otherwise generate a unique ID
+      const uid = row.sourceUid || `generated_${workspace_id}_${supplier_id}_${Date.now()}_${index}`
+      
+      const fields: Record<string, any> = {}
+      
+      // Normalized fields
+      const normalizedFlat: Record<string, any> = {
+        ean: row.normalized.ean,
+        sku: row.normalized.sku,
+        title: row.normalized.title,
+        description: row.normalized.description,
+        price: row.normalized.price,
+        currency: row.normalized.currency,
+        quantity: row.normalized.quantity,
+        category: row.normalized.category,
+        brand: row.normalized.brand,
+        image_url: row.normalized.image_url,
+      }
 
-    // Prepare payload with allocated UIDs
-    const rawPayload = rows.map((row, index) => ({
-      workspace_id: context.workspace_id,
-      supplier_id: context.supplier_id,
-      ingestion_id: context.ingestion_id,
-      uid: uidResult.uids![index].toString(), // Use allocated global UID
-      ean: row.normalized.ean,
-      sku: row.normalized.sku,
-      title: row.normalized.title,
-      description: row.normalized.description,
-      price: row.normalized.price,
-      currency: row.normalized.currency,
-      quantity: row.normalized.quantity,
-      category: row.normalized.category,
-      brand: row.normalized.brand,
-      image_url: row.normalized.image_url,
-      raw: row.normalized.raw,
-      source_file: context.source_file || null,
-    }))
+      // Flatten raw for lookup (lowercased keys)
+      const flatRaw: Record<string, any> =
+        row.normalized.raw && typeof row.normalized.raw === 'object'
+          ? Object.fromEntries(
+              Object.entries(row.normalized.raw).map(([k, v]) => [k.toLowerCase(), v])
+            )
+          : {}
 
-    // Insert into products_raw
-    const { error: rawError } = await supabase
-      .from('products_raw')
-      .upsert(rawPayload, {
+      // 1) Apply explicit mappings
+      for (const [srcLower, dstFieldKey] of mappings.entries()) {
+        if (!srcLower) continue
+        const def = fieldByKey.get(dstFieldKey)
+        if (!def) continue
+        const rawVal = flatRaw[srcLower]
+        const normVal = (normalizedFlat as any)[srcLower]
+        const chosen = normVal ?? rawVal
+        fields[def.key] = coerceDatatype(chosen, def.datatype)
+      }
+
+      // 2) Fill remaining defined fields by best-effort
+      for (const def of fieldDefs) {
+        if (fields[def.key] !== undefined) continue
+        const kLower = def.key.toLowerCase()
+        let val = (normalizedFlat as any)[kLower]
+        if (val == null) val = flatRaw[kLower]
+        fields[def.key] = coerceDatatype(val, def.datatype)
+      }
+
+      return {
+        workspace_id,
+        supplier_id,
+        ingestion_id,
+        uid,
+        fields,
+        source_file: source_file || null,
+      }
+    })
+
+    // Upsert into products_mapped - this is now the single source of truth
+    const { error: mappedError } = await supabase
+      .from('products_mapped')
+      .upsert(mappedPayload, {
         onConflict: 'workspace_id,supplier_id,uid',
         ignoreDuplicates: false,
       })
 
-    if (rawError) {
-      return { success: false, error: rawError.message }
+    if (mappedError) {
+      return { success: false, error: mappedError.message }
     }
 
     return { 
       success: true, 
-      allocatedUids: uidResult.uids.map(uid => uid.toString())
+      allocatedUids: rows.map(row => row.sourceUid || 'generated')
     }
   } catch (err) {
     console.error('Exception in batchInsertWithGlobalUids:', err)

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
 import { getSupplier, getActiveSupplierFile, getSupplierFiles } from '@/lib/suppliers'
-import { detectFeedType } from '@/lib/ingest'
+import { detectFeedType, ingestCSV, ingestJSON, ingestXMLBuffer } from '@/lib/ingest'
 import { ingestCSVWithGlobalUids, ingestJSONWithGlobalUids, ingestXMLWithGlobalUids } from '@/lib/ingestWithGlobalUids'
 import { Readable } from 'stream'
 
@@ -83,7 +83,7 @@ export async function POST(
       let stats: any = { total: 0, ok: 0, errors: 0 }
 
       if (supplier.endpoint_url) {
-        // Handle URL-based ingestion
+        // Handle URL-based ingestion (UID-enforced)
         const response = await fetch(supplier.endpoint_url)
         if (!response.ok) {
           throw new Error(`Failed to fetch data: ${response.statusText}`)
@@ -94,7 +94,7 @@ export async function POST(
 
         if (feedType === 'csv') {
           const stream = Readable.fromWeb(response.body as any)
-          stats = await ingestCSVWithGlobalUids({
+          stats = await ingestCSV({
             stream,
             supabase,
             workspace_id: workspaceId,
@@ -104,45 +104,29 @@ export async function POST(
             source_file: (supplier.endpoint_url as string)
           })
         } else if (feedType === 'json') {
-          const text = await response.text()
-          let data: any[] = []
-          try {
-            const parsed = JSON.parse(text)
-            if (Array.isArray(parsed)) data = parsed
-            else if (parsed && typeof parsed === 'object') {
-              const candidates = ['products', 'items', 'data', 'entries']
-              for (const k of candidates) {
-                if (Array.isArray((parsed as any)[k])) { data = (parsed as any)[k]; break }
-              }
-              if (data.length === 0) data = [parsed]
-            }
-          } catch {
-            data = []
-          }
-          stats = await ingestJSONWithGlobalUids(
+          // Stream JSON directly to parser
+          const stream = Readable.fromWeb(response.body as any)
+          stats = await ingestJSON({
+            stream,
             supabase,
-            data,
-            {
-              workspace_id: workspaceId,
-              supplier_id: supplierId,
-              ingestion_id: ingestionId,
-              uid_source_key: uidSourceKey || undefined,
-              source_file: (supplier.endpoint_url as string)
-            }
-          )
+            workspace_id: workspaceId,
+            supplier_id: supplierId,
+            ingestion_id: ingestionId,
+            uid_source_key: uidSourceKey || undefined,
+            source_file: (supplier.endpoint_url as string)
+          })
         } else if (feedType === 'xml') {
-          const xml = await response.text()
-          stats = await ingestXMLWithGlobalUids(
+          const xmlText = await response.text()
+          const stream = Readable.from([xmlText])
+          stats = await ingestXMLBuffer({
+            stream,
             supabase,
-            xml,
-            {
-              workspace_id: workspaceId,
-              supplier_id: supplierId,
-              ingestion_id: ingestionId,
-              uid_source_key: uidSourceKey || undefined,
-              source_file: (supplier.endpoint_url as string)
-            }
-          )
+            workspace_id: workspaceId,
+            supplier_id: supplierId,
+            ingestion_id: ingestionId,
+            uid_source_key: uidSourceKey || undefined,
+            source_file: (supplier.endpoint_url as string)
+          })
         } else {
           throw new Error('Unsupported feed format')
         }
@@ -162,7 +146,7 @@ export async function POST(
 
           if (feedType === 'csv') {
             const stream = Readable.fromWeb((fileBlob as any).stream())
-            stats = await ingestCSVWithGlobalUids({
+            stats = await ingestCSV({
               stream,
               supabase,
               workspace_id: workspaceId,
@@ -173,40 +157,28 @@ export async function POST(
             })
           } else if (feedType === 'json') {
             const text = await (fileBlob as any).text()
-            let data: any[] = []
-            try {
-              const parsed = JSON.parse(text)
-              if (Array.isArray(parsed)) data = parsed
-              else if (parsed && typeof parsed === 'object') {
-                const candidates = ['products', 'items', 'data', 'entries']
-                for (const k of candidates) { if (Array.isArray((parsed as any)[k])) { data = (parsed as any)[k]; break } }
-                if (data.length === 0) data = [parsed]
-              }
-            } catch { data = [] }
-            stats = await ingestJSONWithGlobalUids(
+            const stream = Readable.from([text])
+            stats = await ingestJSON({
+              stream,
               supabase,
-              data,
-              {
-                workspace_id: workspaceId,
-                supplier_id: supplierId,
-                ingestion_id: ingestionId,
-                uid_source_key: uidSourceKey || undefined,
-                source_file: objectName
-              }
-            )
+              workspace_id: workspaceId,
+              supplier_id: supplierId,
+              ingestion_id: ingestionId,
+              uid_source_key: uidSourceKey || undefined,
+              source_file: objectName
+            })
           } else if (feedType === 'xml') {
             const text = await (fileBlob as any).text()
-            stats = await ingestXMLWithGlobalUids(
+            const stream = Readable.from([text])
+            stats = await ingestXMLBuffer({
+              stream,
               supabase,
-              text,
-              {
-                workspace_id: workspaceId,
-                supplier_id: supplierId,
-                ingestion_id: ingestionId,
-                uid_source_key: uidSourceKey || undefined,
-                source_file: objectName
-              }
-            )
+              workspace_id: workspaceId,
+              supplier_id: supplierId,
+              ingestion_id: ingestionId,
+              uid_source_key: uidSourceKey || undefined,
+              source_file: objectName
+            })
           } else {
             throw new Error('Unsupported feed format')
           }
@@ -292,6 +264,42 @@ export async function POST(
       } else {
         console.log('✅ Updated feed_ingestions with results')
       }
+
+      // Remove products that are no longer present in the latest source
+      // Any product for this supplier not touched in this run (different ingestion_id)
+      // is considered removed from source and will be deleted.
+      try {
+        const { error: delMappedError } = await supabase
+          .from('products_mapped')
+          .delete()
+          .eq('workspace_id', workspaceId)
+          .eq('supplier_id', supplierId)
+          .neq('ingestion_id', ingestionId)
+
+        if (delMappedError) {
+          console.error('❌ Error deleting stale products from products_mapped:', delMappedError)
+        } else {
+          console.log('✅ Removed stale products from products_mapped')
+        }
+
+        const { error: delRawError } = await supabase
+          .from('products_raw')
+          .delete()
+          .eq('workspace_id', workspaceId)
+          .eq('supplier_id', supplierId)
+          .neq('ingestion_id', ingestionId)
+
+        if (delRawError) {
+          console.error('❌ Error deleting stale products from products_raw:', delRawError)
+        } else {
+          console.log('✅ Removed stale products from products_raw')
+        }
+      } catch (delErr) {
+        console.error('❌ Exception while deleting stale products:', delErr)
+      }
+
+      // Products stored with latest ingestion_id in products_raw/products_mapped
+      console.log('✅ Products upserted and stale ones removed')
 
       // Update supplier with successful sync results (for UI)
       const { error: updateError } = await supabase

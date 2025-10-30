@@ -80,6 +80,44 @@ export async function DELETE(
 
     const { id } = await params
 
+    // First, check if there are any child categories
+    const { data: childCategories } = await supabase
+      .from('custom_categories')
+      .select('id')
+      .eq('parent_id', id)
+      .eq('workspace_id', workspaceId)
+
+    if (childCategories && childCategories.length > 0) {
+      return NextResponse.json({ 
+        error: 'Cannot delete category that has subcategories. Please delete subcategories first.' 
+      }, { status: 400 })
+    }
+
+    // Delete all category mappings that reference this category
+    const { error: mappingsError } = await supabase
+      .from('category_mappings')
+      .delete()
+      .eq('workspace_category_id', id)
+      .eq('workspace_id', workspaceId)
+
+    if (mappingsError) {
+      console.error('Error deleting category mappings:', mappingsError)
+      throw mappingsError
+    }
+
+    // Update products that reference this category to set category_id to null
+    const { error: productsError } = await supabase
+      .from('products_final')
+      .update({ category_id: null })
+      .eq('category_id', id)
+      .eq('workspace_id', workspaceId)
+
+    if (productsError) {
+      console.error('Error updating products:', productsError)
+      throw productsError
+    }
+
+    // Now delete the category itself
     const { error } = await supabase
       .from('custom_categories')
       .delete()

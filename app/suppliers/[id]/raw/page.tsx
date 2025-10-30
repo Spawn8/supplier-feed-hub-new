@@ -242,10 +242,15 @@ export default function SupplierRawPage() {
             (() => {
               // Build field keys preserving XML order across products
               // Start with the first product's key order, then append any new keys as encountered
+              // Filter out internal columns like _fieldOrder
               const fieldKeys: string[] = []
               supplier.products.forEach((product: any) => {
                 const rawData = product.raw || product
                 Object.keys(rawData).forEach((key) => {
+                  // Skip internal columns that shouldn't be displayed
+                  if (key === '_fieldOrder') {
+                    return
+                  }
                   if (!fieldKeys.includes(key)) {
                     fieldKeys.push(key)
                   }
@@ -361,7 +366,12 @@ export default function SupplierRawPage() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => {
-                      const jsonData = JSON.stringify(selectedProduct.raw || selectedProduct, null, 2)
+                      const rawData = selectedProduct.raw || selectedProduct
+                      // Filter out internal columns like _fieldOrder
+                      const filteredData = Object.fromEntries(
+                        Object.entries(rawData).filter(([key]) => key !== '_fieldOrder')
+                      )
+                      const jsonData = JSON.stringify(filteredData, null, 2)
                       navigator.clipboard.writeText(jsonData)
                     }}
                     className="px-3 py-1 bg-blue-100 text-blue-700 text-sm rounded hover:bg-blue-200 flex items-center gap-1"
@@ -372,7 +382,11 @@ export default function SupplierRawPage() {
                   <button
                     onClick={() => {
                       const obj = selectedProduct.raw || selectedProduct
-                      const text = Object.entries(obj)
+                      // Filter out internal columns like _fieldOrder
+                      const filteredObj = Object.fromEntries(
+                        Object.entries(obj).filter(([key]) => key !== '_fieldOrder')
+                      )
+                      const text = Object.entries(filteredObj)
                         .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
                         .join('\n')
                       navigator.clipboard.writeText(text)
@@ -398,7 +412,14 @@ export default function SupplierRawPage() {
                 <div className="border-b border-gray-100 pb-3">
                   <div className="text-sm font-medium text-gray-900 mb-1">Complete Raw Data</div>
                   <pre className="bg-gray-50 p-4 rounded text-xs overflow-x-auto text-gray-800 whitespace-pre-wrap">
-                    {JSON.stringify(selectedProduct.raw || selectedProduct, null, 2)}
+                    {(() => {
+                      const rawData = selectedProduct.raw || selectedProduct
+                      // Filter out internal columns like _fieldOrder
+                      const filteredData = Object.fromEntries(
+                        Object.entries(rawData).filter(([key]) => key !== '_fieldOrder')
+                      )
+                      return JSON.stringify(filteredData, null, 2)
+                    })()}
                   </pre>
                 </div>
               </div>

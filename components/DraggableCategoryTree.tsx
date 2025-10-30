@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useState } from 'react'
 import {
   DndContext,
   closestCenter,
@@ -24,7 +24,6 @@ import {
   useSortable,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import LoadingOverlay from './ui/LoadingOverlay'
 
 
 // Function to get category level name based on parentPath
@@ -76,6 +75,9 @@ interface DraggableCategoryTreeProps {
   onRefresh: () => void
   onEdit: (category: Category) => void
   onDelete: (categoryId: string) => void
+  expandedCategories: Set<string>
+  onToggleExpanded: (categoryId: string) => void
+  isEditMode: boolean
 }
 
 function SortableCategoryItem({ 
@@ -91,7 +93,8 @@ function SortableCategoryItem({
   allCategories,
   level = 0,
   currentPath,
-  renderCategoryTree
+  renderCategoryTree,
+  isEditMode
 }: { 
   category: DraggableCategory
   index: number
@@ -106,6 +109,7 @@ function SortableCategoryItem({
   level?: number
   currentPath?: string
   renderCategoryTree: (categories: DraggableCategory[], level?: number, startIndex?: number, parentPath?: string) => React.ReactElement[]
+  isEditMode: boolean
 }) {
   const {
     attributes,
@@ -205,9 +209,9 @@ function SortableCategoryItem({
         ) : (
           <div 
             className={`flex items-center justify-between p-4 ${
-              category.children.length > 0 ? 'cursor-pointer' : ''
+              category.children.length > 0 && !isEditMode ? 'cursor-pointer' : ''
             }`}
-            onClick={category.children.length > 0 ? () => onToggleExpanded(category.id) : undefined}
+            onClick={category.children.length > 0 && !isEditMode ? () => onToggleExpanded(category.id) : undefined}
           >
             <div className="flex items-center space-x-4 flex-1">
               {/* Number Column - matches header width */}
@@ -215,16 +219,18 @@ function SortableCategoryItem({
                 <span className="text-sm font-medium text-gray-500 w-6 text-center">
                   {parentPath ? `${parentPath}.${index + 1}` : index + 1}
                 </span>
-                <div
-                  {...attributes}
-                  {...listeners}
-                  className="cursor-grab hover:cursor-grabbing p-1 text-gray-400 hover:text-gray-600"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
-                  </svg>
-                </div>
+                {isEditMode && (
+                  <div
+                    {...attributes}
+                    {...listeners}
+                    className="cursor-grab hover:cursor-grabbing p-1 text-gray-400 hover:text-gray-600"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                    </svg>
+                  </div>
+                )}
               </div>
 
               {/* Category Name Column */}
@@ -234,16 +240,18 @@ function SortableCategoryItem({
                   {category.children.length > 0 && (
                     <div className="flex items-center gap-1 text-xs text-gray-500">
                       <span className="text-gray-400">({category.children.length})</span>
-                      <svg 
-                        className={`w-4 h-4 transition-transform duration-300 ease-out ${
-                          isExpanded ? 'rotate-90' : ''
-                        }`}
-                        fill="none" 
-                        stroke="currentColor" 
-                        viewBox="0 0 24 24"
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
+                      {!isEditMode && (
+                        <svg 
+                          className={`w-4 h-4 transition-transform duration-300 ease-out ${
+                            isExpanded ? 'rotate-90' : ''
+                          }`}
+                          fill="none" 
+                          stroke="currentColor" 
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      )}
                     </div>
                   )}
                 </div>
@@ -305,7 +313,7 @@ function SortableCategoryItem({
       {category.children.length > 0 && !isBeingDragged && (
         <div className="mt-3 relative">
           <div className={`overflow-hidden transition-all duration-300 ease-out ${
-            expandedCategories.has(category.id) 
+            isEditMode || expandedCategories.has(category.id)
               ? 'max-h-screen opacity-100 transform translate-y-0' 
               : 'max-h-0 opacity-0 transform -translate-y-2'
           }`}>
@@ -326,52 +334,15 @@ export default function DraggableCategoryTree({
   onReorder,
   onRefresh,
   onEdit,
-  onDelete
+  onDelete,
+  expandedCategories,
+  onToggleExpanded,
+  isEditMode
 }: DraggableCategoryTreeProps) {
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set())
-  const [isReordering, setIsReordering] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
   const [draggedCategory, setDraggedCategory] = useState<DraggableCategory | null>(null)
 
-  // Build a flat list of all category ids for defaults
-  const allCategoryIds = useMemo<string[]>(() => {
-    const ids: string[] = []
-    const walk = (nodes: DraggableCategory[]) => {
-      nodes.forEach(n => {
-        ids.push(n.id)
-        if (n.children?.length) walk(n.children)
-      })
-    }
-    walk(categories)
-    return ids
-  }, [categories])
-
-  // Initialize expanded state from sessionStorage, default: expand all
-  useEffect(() => {
-    try {
-      const saved = typeof window !== 'undefined' ? sessionStorage.getItem('categories_expanded_state') : null
-      if (saved) {
-        const parsed: string[] = JSON.parse(saved)
-        setExpandedCategories(new Set(parsed))
-      } else {
-        // default expand all
-        setExpandedCategories(new Set(allCategoryIds))
-      }
-    } catch {
-      setExpandedCategories(new Set(allCategoryIds))
-    }
-  }, [allCategoryIds])
-
-  // Persist expanded state for the session
-  useEffect(() => {
-    if (expandedCategories.size > 0) {
-      try {
-        const arr = Array.from(expandedCategories)
-        sessionStorage.setItem('categories_expanded_state', JSON.stringify(arr))
-      } catch {}
-    }
-  }, [expandedCategories])
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -405,7 +376,6 @@ export default function DraggableCategoryTree({
 
   // Helper function to move category (with all its subcategories) to new parent
   const moveCategoryToParent = async (categoryId: string, newParentId: string) => {
-    setIsReordering(true)
     try {
       const response = await fetch('/api/categories/move', {
         method: 'POST',
@@ -432,9 +402,50 @@ export default function DraggableCategoryTree({
     } catch (error) {
       console.error('Error moving category:', error)
       alert('Failed to move category. Please try again.')
-    } finally {
-      setIsReordering(false)
     }
+  }
+
+  // Helper function to find category and its parent in the tree
+  const findCategoryAndParent = (categories: DraggableCategory[], categoryId: string): { category: DraggableCategory | null, parent: DraggableCategory | null, index: number } => {
+    for (let i = 0; i < categories.length; i++) {
+      const category = categories[i]
+      if (category.id === categoryId) {
+        return { category, parent: null, index: i }
+      }
+      
+      // Recursively check children at any depth
+      const result = findCategoryAndParent(category.children, categoryId)
+      if (result.category) {
+        // If we found it in children, we need to find the direct parent
+        if (result.parent === null) {
+          // This means the found category is a direct child of the current category
+          return { category: result.category, parent: category, index: result.index }
+        } else {
+          // This means the found category is deeper, return as is
+          return result
+        }
+      }
+    }
+    return { category: null, parent: null, index: -1 }
+  }
+
+  // Helper function to update children order at any depth level
+  const updateChildrenOrder = (categories: DraggableCategory[], parentId: string, oldIndex: number, newIndex: number): DraggableCategory[] => {
+    return categories.map(category => {
+      if (category.id === parentId) {
+        // Found the parent, update its children
+        const newChildren = arrayMove(category.children, oldIndex, newIndex)
+        const updatedChildren = newChildren.map((child, index) => ({
+          ...child,
+          sort_order: index
+        }))
+        return { ...category, children: updatedChildren }
+      } else if (category.children.length > 0) {
+        // Recursively search in children
+        return { ...category, children: updateChildrenOrder(category.children, parentId, oldIndex, newIndex) }
+      }
+      return category
+    })
   }
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -465,40 +476,35 @@ export default function DraggableCategoryTree({
 
     // Regular reordering within the same container
     if (active.id !== over?.id) {
-      const oldIndex = categories.findIndex(cat => cat.id === active.id)
-      const newIndex = categories.findIndex(cat => cat.id === over?.id)
+      const draggedResult = findCategoryAndParent(categories, active.id as string)
+      const targetResult = findCategoryAndParent(categories, over.id as string)
 
-      if (oldIndex !== -1 && newIndex !== -1) {
-        const newCategories = arrayMove(categories, oldIndex, newIndex)
-        
-        // Update sort_order for all affected categories
-        const updatedCategories = newCategories.map((cat, index) => ({
-          ...cat,
-          sort_order: index
-        }))
-
-        // Show loading overlay during API call
-        setIsReordering(true)
-        try {
-          await onReorder(updatedCategories)
-        } catch (error) {
-          console.error('Error reordering categories:', error)
-        } finally {
-          setIsReordering(false)
+      if (draggedResult.category && targetResult.category) {
+        // If both categories are at the same level (same parent or both root level)
+        if (draggedResult.parent?.id === targetResult.parent?.id) {
+          let newCategories = [...categories]
+          
+          if (draggedResult.parent === null && targetResult.parent === null) {
+            // Both are root level categories
+            newCategories = arrayMove(categories, draggedResult.index, targetResult.index)
+            
+            // Update sort_order for all root categories
+            const updatedCategories = newCategories.map((cat, index) => ({
+              ...cat,
+              sort_order: index
+            }))
+            
+            onReorder(updatedCategories)
+          } else if (draggedResult.parent && targetResult.parent && draggedResult.parent.id === targetResult.parent.id) {
+            // Both are children of the same parent (at any depth)
+            const updatedCategories = updateChildrenOrder(categories, draggedResult.parent.id, draggedResult.index, targetResult.index)
+            onReorder(updatedCategories)
+          }
         }
       }
     }
   }
 
-  const toggleExpanded = (categoryId: string) => {
-    const newExpanded = new Set(expandedCategories)
-    if (newExpanded.has(categoryId)) {
-      newExpanded.delete(categoryId)
-    } else {
-      newExpanded.add(categoryId)
-    }
-    setExpandedCategories(newExpanded)
-  }
 
   // Function to calculate the total height of the tree structure
   const calculateTreeHeight = (categories: DraggableCategory[]): number => {
@@ -530,13 +536,14 @@ export default function DraggableCategoryTree({
           onEdit={onEdit}
           onDelete={onDelete}
           expandedCategories={expandedCategories}
-          onToggleExpanded={toggleExpanded}
+          onToggleExpanded={onToggleExpanded}
           isDragging={isDragging}
           activeDragId={activeDragId}
           allCategories={categories}
           level={level}
           currentPath={currentPath}
           renderCategoryTree={renderCategoryTree}
+          isEditMode={isEditMode}
         />
       )
     })
@@ -687,9 +694,11 @@ export default function DraggableCategoryTree({
                 {/* Number Column */}
                 <div className="flex items-center space-x-2 w-16">
                   <span className="text-sm font-semibold text-gray-700">#</span>
-                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-                  </svg>
+                  {isEditMode && (
+                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                    </svg>
+                  )}
                 </div>
 
                 {/* Category Name Column */}
@@ -733,11 +742,6 @@ export default function DraggableCategoryTree({
         </DragOverlay>
       </DndContext>
 
-      {/* Global Loading Overlay */}
-      <LoadingOverlay 
-        isVisible={isReordering} 
-        message="Reordering categories… Please wait" 
-      />
     </div>
   )
 }

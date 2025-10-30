@@ -5,7 +5,7 @@ import { updateSupplier } from '@/lib/suppliers'
 
 export async function PUT(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const supabase = await createSupabaseServerClient()
@@ -15,7 +15,7 @@ export async function PUT(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const supplierId = params.id
+    const { id: supplierId } = await params
     const body = await req.json()
     
     const { workspace_id, ...supplierData } = body

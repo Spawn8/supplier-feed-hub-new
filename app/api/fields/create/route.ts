@@ -13,7 +13,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json()
-    const { workspace_id, name, key, datatype, description, is_required, is_unique } = body
+    const { workspace_id, name, key, datatype, description, is_required, is_unique, use_for_category_mapping } = body
 
     if (!workspace_id) {
       return NextResponse.json({ error: 'Workspace ID is required' }, { status: 400 })
@@ -34,6 +34,18 @@ export async function POST(req: Request) {
       }, { status: 400 })
     }
 
+    // Get the next sort order by finding the highest sort_order for this workspace
+    const { data: maxOrderData } = await supabase
+      .from('custom_fields')
+      .select('sort_order')
+      .eq('workspace_id', workspace_id)
+      .order('sort_order', { ascending: false })
+      .limit(1)
+    
+    const nextSortOrder = maxOrderData && maxOrderData.length > 0 
+      ? (maxOrderData[0].sort_order || 0) + 1 
+      : 1
+
     // Create custom field in database
     console.log('Creating custom field in database...')
     
@@ -47,7 +59,8 @@ export async function POST(req: Request) {
         description,
         is_required: is_required || false,
         is_unique: is_unique || false,
-        sort_order: 0 // Will be updated by reorder if needed
+        use_for_category_mapping: use_for_category_mapping || false,
+        sort_order: nextSortOrder
       })
       .select()
       .single()

@@ -9,12 +9,14 @@ export default function Modal({
   children,
   onClose,
   footer,
+  hideCloseButton = false,
 }: {
   isOpen: boolean
   title?: string
   children: ReactNode
   footer?: ReactNode
   onClose: () => void
+  hideCloseButton?: boolean
 }) {
   if (!isOpen) return null
   return (
@@ -23,13 +25,20 @@ export default function Modal({
         <div className="p-6">
           {title && <h2 className="text-lg font-semibold mb-4 text-gray-900">{title}</h2>}
           <div>{children}</div>
-          <div className="mt-6 flex justify-end gap-2">
-            {footer ?? (
-              <Button onClick={onClose}>
-                Close
-              </Button>
-            )}
-          </div>
+          {!hideCloseButton && (
+            <div className="mt-6 flex justify-end gap-2">
+              {footer ?? (
+                <Button onClick={onClose}>
+                  Close
+                </Button>
+              )}
+            </div>
+          )}
+          {hideCloseButton && footer && (
+            <div className="mt-6 flex justify-end gap-2">
+              {footer}
+            </div>
+          )}
         </div>
       </div>
     </div>

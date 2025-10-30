@@ -5,7 +5,7 @@ import { triggerSupplierSync } from '@/lib/suppliers'
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const supabase = await createSupabaseServerClient()
@@ -20,7 +20,7 @@ export async function POST(
       return NextResponse.json({ error: 'No workspace selected' }, { status: 400 })
     }
 
-    const supplierId = params.id
+    const { id: supplierId } = await params
 
     // Trigger supplier sync
     const result = await triggerSupplierSync(supplierId)

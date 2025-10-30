@@ -18,6 +18,7 @@ interface CustomField {
   name: string
   key: string
   datatype: string
+  sort_order?: number
 }
 
 interface MappedPageProps {
@@ -88,15 +89,25 @@ export default function MappedPage({ params }: MappedPageProps) {
   const getDisplayColumns = () => {
     // Only show fields that were actually mapped
     const mappedColumns = fieldMappings
-      .filter(mapping => mapping.source_key && mapping.field_key)
-      .map(mapping => ({
-        fieldId: mapping.field_key,
-        sourceKey: mapping.source_key,
-        fieldName: getFieldName(mapping.field_key)
-      }))
-    
-    console.log('🔍 Mapped columns for display:', mappedColumns)
-    
+      .filter((m: any) => m.source_key && m.field_key)
+      .map((m: any) => {
+        const cf = customFields.get(m.field_key)
+        return {
+          fieldId: m.field_key as string,
+          sourceKey: m.source_key as string,
+          fieldName: getFieldName(m.field_key as string),
+          sort_order: cf?.sort_order ?? Number.MAX_SAFE_INTEGER,
+          name_for_tiebreak: cf?.name ?? String(m.field_key)
+        }
+      })
+      // Sort by custom field sort_order, then by name for stability
+      .sort((a: any, b: any) => {
+        if (a.sort_order !== b.sort_order) return (a.sort_order as number) - (b.sort_order as number)
+        return a.name_for_tiebreak.localeCompare(b.name_for_tiebreak)
+      })
+
+    console.log('🔍 Mapped columns for display (ordered):', mappedColumns)
+
     return mappedColumns.map(item => item.fieldId)
   }
 

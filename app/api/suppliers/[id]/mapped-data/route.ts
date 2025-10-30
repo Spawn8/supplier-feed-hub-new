@@ -113,8 +113,9 @@ export async function GET(
     // Get custom fields for this workspace to show field names
     const { data: customFields } = await supabase
       .from('custom_fields')
-      .select('id, name, key, datatype')
+      .select('id, name, key, datatype, sort_order')
       .eq('workspace_id', supplier.workspace_id)
+      .order('sort_order', { ascending: true })
 
     // Create a map for easy lookup by both id and key
     const customFieldsMap = new Map()

@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import Button from '@/components/ui/Button'
 import Modal from '@/components/ui/Modal'
-import { useWorkspace } from '@/lib/workspaceContext'
+import HierarchicalCategorySelect from '@/components/HierarchicalCategorySelect'
 import FieldFormModal from '@/components/FieldFormModal'
+import { useWorkspace } from '@/lib/workspaceContext'
 
 type SupplierCategory = {
   name: string
@@ -21,7 +22,7 @@ type CategoryMapping = {
   id?: string
   supplier_category: string
   workspace_category_id?: string
-  workspace_categories?: {
+  custom_categories?: {
     id: string
     name: string
     path: string
@@ -34,6 +35,7 @@ interface CategoryMappingInterfaceProps {
   onClose?: () => void
   onMappingCreated: (mapping: CategoryMapping) => void
   inline?: boolean
+  sourceFields?: string[] // Available source fields for category selection
 }
 
 export default function CategoryMappingInterface({
@@ -41,7 +43,8 @@ export default function CategoryMappingInterface({
   supplierName,
   onClose,
   onMappingCreated,
-  inline = false
+  inline = false,
+  sourceFields = []
 }: CategoryMappingInterfaceProps) {
   const { activeWorkspaceId } = useWorkspace()
   const [loading, setLoading] = useState(true)
@@ -52,266 +55,374 @@ export default function CategoryMappingInterface({
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedSupplierCategory, setSelectedSupplierCategory] = useState<string>('')
   const [selectedWorkspaceCategory, setSelectedWorkspaceCategory] = useState<string>('')
+  
+  // Category field selection and enable toggle
+  const [categoryFieldEnabled, setCategoryFieldEnabled] = useState(false)
+  const [selectedCategoryField, setSelectedCategoryField] = useState<string>('')
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [isLocked, setIsLocked] = useState(false)
+  const [showUnlockWarning, setShowUnlockWarning] = useState(false)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  
+  // Target fields for category replacement
+  const [selectedTargetFields, setSelectedTargetFields] = useState<string[]>([])
+  const [allCustomFields, setAllCustomFields] = useState<any[]>([])
+  const [showCreateFieldModal, setShowCreateFieldModal] = useState(false)
 
-  // Category mapping setup
-  const [enableCategoryMapping, setEnableCategoryMapping] = useState<boolean>(false)
-  const [categoryFieldName, setCategoryFieldName] = useState<string>('Category')
-  const [categorySourceField, setCategorySourceField] = useState<string>('')
-  const [supplierKeys, setSupplierKeys] = useState<string[]>([])
-  const [savingSetup, setSavingSetup] = useState<boolean>(false)
-  const [customFields, setCustomFields] = useState<Array<{ id: string; key: string; name: string }>>([])
-  const [setupCompleted, setSetupCompleted] = useState<boolean>(false)
-  const [isFieldModalOpen, setIsFieldModalOpen] = useState<boolean>(false)
-  const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
+  // Debug: Log sourceFields when they change
   useEffect(() => {
-    fetchData()
+    console.log('CategoryMappingInterface - sourceFields:', sourceFields)
+  }, [sourceFields])
+
+  // Debug: Log selectedCategoryField when it changes
+  useEffect(() => {
+    console.log('CategoryMappingInterface - selectedCategoryField:', selectedCategoryField)
+  }, [selectedCategoryField])
+
+  // Note: Automatic saving removed - settings are only saved when user clicks "Save Settings" button
+
+  // Don't reset anything when toggling - just control visibility
+  // The toggle should only show/hide the interface, not reset data
+
+  // Field selection changes are handled by handleFieldChange function
+  // No automatic resets on field changes to preserve state
+
+  // Track changes to enable/disable save button
+  useEffect(() => {
+    // Mark as having changes when any of these change
+    setHasUnsavedChanges(true)
+  }, [categoryFieldEnabled, selectedCategoryField, categoriesLoaded, existingMappings])
+
+  // Simple state restoration - just load everything when component mounts
+  useEffect(() => {
+    if (supplierId) {
+      loadSettingsAndCategories()
+    }
   }, [supplierId])
 
-  // Check if setup is already completed by looking for existing field mappings
-  useEffect(() => {
-    const checkExistingSetup = async () => {
-      if (!activeWorkspaceId) return
-      try {
-        const res = await fetch(`/api/suppliers/${supplierId}/field-mappings?workspace_id=${activeWorkspaceId}`)
-        const data = await res.json()
-        if (res.ok && data.mappings && data.mappings.length > 0) {
-          // Check if there's a category field mapping
-          const categoryMapping = data.mappings.find((m: any) => 
-            m.source_key && m.source_key.toLowerCase().includes('category')
-          )
-          if (categoryMapping) {
-            setSetupCompleted(true)
-            setEnableCategoryMapping(true)
-            setCategorySourceField(categoryMapping.source_key)
-            // Try to fetch categories with this field
-            try {
-              const qs = new URLSearchParams({ supplier_id: supplierId, field: categoryMapping.source_key })
-              const catRes = await fetch(`/api/categories/supplier-categories?${qs.toString()}`)
-              const catData = await catRes.json()
-              if (catRes.ok) {
-                const cats: string[] = catData.categories || []
-                setSupplierCategories(cats.map((name) => ({ name, count: 0 })))
-              }
-            } catch (err) {
-              console.warn('Failed to fetch existing categories:', err)
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Failed to check existing setup:', err)
-      }
-    }
-    checkExistingSetup()
-  }, [activeWorkspaceId, supplierId])
-
-  useEffect(() => {
-    // Load supplier sample keys and existing custom fields for setup controls
-    const loadSetupData = async () => {
-      try {
-        if (!activeWorkspaceId) return
-        const [keysRes, fieldsRes] = await Promise.all([
-          fetch(`/api/suppliers/${supplierId}/sample-keys?workspace_id=${activeWorkspaceId}`),
-          fetch(`/api/fields/list?workspace_id=${activeWorkspaceId}`)
-        ])
-        if (keysRes.ok) {
-          const keysData = await keysRes.json()
-          setSupplierKeys(keysData.keys || [])
-        }
-        if (fieldsRes.ok) {
-          const fieldsData = await fieldsRes.json()
-          setCustomFields(fieldsData.fields || [])
-          // If a category-like field already exists, prefill name and enable toggle hint
-          const existingCategory = (fieldsData.fields || []).find((f: any) => f.key?.toLowerCase() === 'category')
-          if (existingCategory) {
-            setCategoryFieldName(existingCategory.name || 'Category')
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
-    loadSetupData()
-  }, [activeWorkspaceId, supplierId])
-
-  const fetchData = async () => {
+  const loadSettingsAndCategories = async () => {
     try {
       setLoading(true)
       setError(null)
 
-      // Fetch supplier categories
-      const supplierRes = await fetch(`/api/categories/supplier-categories?supplier_id=${supplierId}`)
-      const supplierData = await supplierRes.json()
-      if (!supplierRes.ok) throw new Error(supplierData.error || 'Failed to load supplier categories')
-
-      // Fetch custom categories
+      // Load workspace categories
       const workspaceRes = await fetch('/api/categories')
       const workspaceData = await workspaceRes.json()
-      if (!workspaceRes.ok) throw new Error(workspaceData.error || 'Failed to load custom categories')
+      if (!workspaceRes.ok) throw new Error(workspaceData.error || 'Failed to load workspace categories')
+      setWorkspaceCategories(workspaceData.categories || [])
 
-      // Fetch existing mappings
+      // Load existing mappings
       const mappingsRes = await fetch(`/api/categories/mappings?supplier_id=${supplierId}`)
       const mappingsData = await mappingsRes.json()
       if (!mappingsRes.ok) throw new Error(mappingsData.error || 'Failed to load mappings')
-
-      // Process supplier categories with counts
-      const categoryCounts = new Map<string, number>()
-      supplierData.categories.forEach((cat: string) => {
-        categoryCounts.set(cat, (categoryCounts.get(cat) || 0) + 1)
-      })
-
-      const processedSupplierCategories = Array.from(categoryCounts.entries())
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count) // Sort by count descending
-
-      setSupplierCategories(processedSupplierCategories)
-      setWorkspaceCategories(workspaceData.categories || [])
       setExistingMappings(mappingsData.mappings || [])
+
+      // Load settings from database
+      const settingsRes = await fetch(`/api/suppliers/${supplierId}/category-mapping-settings`)
+      if (settingsRes.ok) {
+        const settingsData = await settingsRes.json()
+        if (settingsData.settings) {
+          console.log('📋 Loading settings:', settingsData.settings)
+          
+          // Set all states
+          setCategoryFieldEnabled(settingsData.settings.category_mapping_enabled || false)
+          setSelectedCategoryField(settingsData.settings.selected_category_field || '')
+          setCategoriesLoaded(settingsData.settings.categories_loaded || false)
+          setIsLocked(settingsData.settings.categories_loaded || false)
+          setSelectedTargetFields(settingsData.settings.target_fields || [])
+          
+          // If categories were loaded, load them now
+          if (settingsData.settings.categories_loaded && settingsData.settings.selected_category_field) {
+            console.log('🔄 Loading categories for field:', settingsData.settings.selected_category_field)
+            await loadCategoriesData(settingsData.settings.selected_category_field)
+          }
+        }
+      }
+      
+      // Load all custom fields
+      await loadAllCustomFields()
+
     } catch (e: any) {
       setError(e.message || 'Failed to load data')
     } finally {
       setLoading(false)
     }
   }
+  
+  const loadAllCustomFields = async () => {
+    if (!activeWorkspaceId) return
+    
+    try {
+      const response = await fetch(`/api/fields/list?workspace_id=${activeWorkspaceId}`)
+      const data = await response.json()
+      if (response.ok) {
+        const fields = data.fields || []
+        setAllCustomFields(fields)
+        
+        // Find the field that is currently marked for category mapping
+        const activeField = fields.find((f: any) => f.use_for_category_mapping === true)
+        
+        // If there's an active field and no field is selected yet, preselect it
+        if (activeField && selectedTargetFields.length === 0) {
+          setSelectedTargetFields([activeField.id])
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching custom fields:', err)
+    }
+  }
 
-  const handleCreateMapping = async () => {
-    if (!selectedSupplierCategory || !selectedWorkspaceCategory) return
+  const loadCategoriesData = async (field: string) => {
+    try {
+      const url = `/api/categories/supplier-categories?supplier_id=${supplierId}&field=${encodeURIComponent(field)}`
+      console.log('🌐 Loading categories from:', url)
+      
+      const res = await fetch(url)
+      const data = await res.json()
+      console.log('📡 Categories response:', data)
+      
+      if (!res.ok) throw new Error(data.error || 'Failed to load categories')
+
+      // Process categories
+      const categoryCounts = new Map<string, number>()
+      data.categories.forEach((cat: string) => {
+        categoryCounts.set(cat, (categoryCounts.get(cat) || 0) + 1)
+      })
+
+      const processedCategories = Array.from(categoryCounts.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+
+      console.log('✅ Setting categories:', processedCategories)
+      setSupplierCategories(processedCategories)
+      
+    } catch (e: any) {
+      console.error('❌ Failed to load categories:', e)
+      setError(e.message || 'Failed to load categories')
+    }
+  }
+
+  const loadCategories = async (forceLoad = false) => {
+    console.log('🔄 loadCategories called with:', { forceLoad, categoryFieldEnabled, selectedCategoryField })
+    
+    if (!forceLoad && !categoryFieldEnabled) {
+      setError('Please enable category mapping first')
+      return
+    }
+
+    if (!selectedCategoryField) {
+      setError('Please select a category field first')
+      return
+    }
 
     try {
       setLoading(true)
-      const res = await fetch('/api/categories/mappings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          supplier_id: supplierId,
-          supplier_category: selectedSupplierCategory,
-          workspace_category_id: selectedWorkspaceCategory
-        })
-      })
-
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to create mapping')
-
-      setExistingMappings([...existingMappings, data.mapping])
-      onMappingCreated(data.mapping)
+      setError(null)
       
-      // Reset selections
-      setSelectedSupplierCategory('')
-      setSelectedWorkspaceCategory('')
+      await loadCategoriesData(selectedCategoryField)
+      setCategoriesLoaded(true)
+      setIsLocked(true)
+      
     } catch (e: any) {
-      setError(e.message || 'Failed to create mapping')
+      setError(e.message || 'Failed to load categories')
     } finally {
       setLoading(false)
     }
   }
 
-  const toKey = (name: string) =>
-    name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '') || 'category'
+  const handleCreateMapping = () => {
+    if (!selectedSupplierCategory || !selectedWorkspaceCategory) return
 
-  const handleSaveCategorySetup = async () => {
-    if (!activeWorkspaceId) return
-    if (!enableCategoryMapping) return
-    if (!categoryFieldName || !categorySourceField) {
-      setError('Please provide a field name and select a source field.')
-      return
+    // Create mapping object locally (don't save to database yet)
+    const newMapping = {
+      id: `temp-${Date.now()}`, // Temporary ID for local storage
+      supplier_id: supplierId,
+      supplier_category: selectedSupplierCategory,
+      workspace_category_id: selectedWorkspaceCategory,
+      mapping_type: 'manual',
+      rule_config: '{}',
+      created_at: new Date().toISOString()
     }
+
+    // Add to local mappings
+    setExistingMappings([...existingMappings, newMapping])
+    
+    // Reset selections
+    setSelectedSupplierCategory('')
+    setSelectedWorkspaceCategory('')
+  }
+
+  const handleSaveSettings = async () => {
     try {
-      setSavingSetup(true)
+      setSaving(true)
       setError(null)
 
-      // 1) Ensure custom field exists (text)
-      const key = toKey(categoryFieldName)
-      let fieldId = customFields.find(f => f.key === key)?.id
-      if (!fieldId) {
-        const createRes = await fetch('/api/fields/create', {
+      // Get all existing mappings from database for this supplier
+      const existingRes = await fetch(`/api/categories/mappings?supplier_id=${supplierId}`)
+      const existingData = await existingRes.json()
+      const dbMappings = existingData.mappings || []
+
+      // Find mappings that were deleted locally (exist in DB but not in local state)
+      const localMappingIds = existingMappings.map(m => m.id).filter(id => id && !id.startsWith('temp-'))
+      const deletedMappings = dbMappings.filter((dbMapping: any) => 
+        !localMappingIds.includes(dbMapping.id)
+      )
+
+      // Delete removed mappings from database
+      const deletePromises = deletedMappings.map(async (mapping: any) => {
+        const res = await fetch(`/api/categories/mappings/${mapping.id}`, {
+          method: 'DELETE'
+        })
+        if (!res.ok) {
+          const errorData = await res.json()
+          throw new Error(errorData.error || 'Failed to delete mapping')
+        }
+      })
+
+      await Promise.all(deletePromises)
+
+      // Save new mappings to the database
+      const mappingPromises = existingMappings.map(async (mapping) => {
+        // Skip if it's already saved (has a real ID, not temp-)
+        if (!mapping.id || !mapping.id.startsWith('temp-')) {
+          return mapping
+        }
+
+        const res = await fetch('/api/categories/mappings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            workspace_id: activeWorkspaceId,
-            name: categoryFieldName,
-            key,
-            datatype: 'text',
-            description: 'Product category',
-            is_required: false,
-            is_unique: false
+            supplier_id: supplierId,
+            supplier_category: mapping.supplier_category,
+            workspace_category_id: mapping.workspace_category_id
           })
         })
-        const createData = await createRes.json()
-        if (!createRes.ok) throw new Error(createData.error || 'Failed to create category field')
-        fieldId = createData.field.id
-        setCustomFields(prev => [...prev, { id: fieldId!, key, name: categoryFieldName }])
-      }
 
-      // 2) Create field mapping from supplier source to this custom field
-      const mapRes = await fetch('/api/suppliers/field-mappings', {
+        if (!res.ok) {
+          const errorData = await res.json()
+          throw new Error(errorData.error || 'Failed to save mapping')
+        }
+
+        const data = await res.json()
+        return data.mapping
+      })
+
+      // Wait for all mappings to be saved
+      const savedMappings = await Promise.all(mappingPromises)
+
+      // Update local state with real IDs
+      setExistingMappings(savedMappings)
+
+      // Update custom fields: ensure only ONE field is marked for category mapping
+      const selectedFieldId = selectedTargetFields[0] // Only one field allowed
+      
+      const fieldUpdatePromises = allCustomFields.map(async (field) => {
+        const shouldBeMarked = field.id === selectedFieldId
+        
+        // Only update if the state needs to change
+        if (field.use_for_category_mapping !== shouldBeMarked) {
+          const res = await fetch(`/api/fields/${field.id}/update`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              workspace_id: activeWorkspaceId,
+              name: field.name,
+              key: field.key,
+              datatype: field.datatype,
+              description: field.description,
+              is_required: field.is_required,
+              is_unique: field.is_unique,
+              use_for_category_mapping: shouldBeMarked
+            })
+          })
+          
+          if (!res.ok) {
+            console.error(`Failed to update field ${field.id}`)
+          }
+        }
+      })
+      
+      await Promise.all(fieldUpdatePromises)
+      
+      // Reload custom fields to get updated state
+      await loadAllCustomFields()
+
+      // Then save the settings
+      const settingsRes = await fetch(`/api/suppliers/${supplierId}/category-mapping-settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          supplier_id: supplierId,
-          workspace_id: activeWorkspaceId,
-          mappings: [
-            {
-              custom_field_id: fieldId,
-              source_field: categorySourceField
-            }
-          ]
+          category_mapping_enabled: categoryFieldEnabled,
+          selected_category_field: selectedCategoryField,
+          target_fields: selectedTargetFields,
+          categories_loaded: categoriesLoaded
         })
       })
-      const mapData = await mapRes.json()
-      if (!mapRes.ok) throw new Error(mapData.error || 'Failed to save field mapping')
 
-      // 3) Success
-      setError(null)
-      setSetupCompleted(true)
-      
-      // 4) Re-fetch supplier categories now that field mapping is set up
-      try {
-        const qs = new URLSearchParams({ supplier_id: supplierId })
-        if (categorySourceField) qs.set('field', categorySourceField)
-        const res = await fetch(`/api/categories/supplier-categories?${qs.toString()}`)
-        const data = await res.json()
-        if (res.ok) {
-          const cats: string[] = data.categories || []
-          setSupplierCategories(cats.map((name) => ({ name, count: 0 })))
-        }
-      } catch (err) {
-        console.warn('Failed to re-fetch categories after setup:', err)
+      if (!settingsRes.ok) {
+        const errorData = await settingsRes.json()
+        throw new Error(errorData.error || 'Failed to save settings')
       }
-      
-      // 5) Show success message
-      setSuccessMessage('Category mapping setup saved successfully!')
-      setTimeout(() => {
-        setSuccessMessage(null)
-      }, 3000)
+
+      // Show success message
+      setError(null)
+      // Reset changes flag since we just saved
+      setHasUnsavedChanges(false)
+      alert('Category mapping settings and mappings saved successfully!')
     } catch (e: any) {
-      setError(e.message || 'Failed to save category mapping setup')
+      setError(e.message || 'Failed to save settings')
     } finally {
-      setSavingSetup(false)
+      setSaving(false)
     }
   }
 
-  const handleRemoveMapping = async (mappingId: string) => {
-    try {
-      setLoading(true)
-      const res = await fetch(`/api/categories/mappings/${mappingId}`, {
-        method: 'DELETE'
-      })
+  const handleRemoveMapping = (mappingId: string) => {
+    // Remove mapping locally (don't delete from database until save)
+    setExistingMappings(existingMappings.filter(m => m.id !== mappingId))
+  }
 
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to remove mapping')
+  const handleUnlock = () => {
+    setShowUnlockWarning(true)
+  }
+
+  const handleConfirmUnlock = () => {
+    setShowUnlockWarning(false)
+    setIsLocked(false)
+    setCategoriesLoaded(false)
+    setCategoryFieldEnabled(false) // Also disable the toggle when unlocking
+    setExistingMappings([])
+    setError(null)
+  }
+
+  const handleCancelUnlock = () => {
+    setShowUnlockWarning(false)
+  }
+
+  const handleFieldChange = (newField: string) => {
+    if (isLocked && newField !== selectedCategoryField) {
+      const confirmed = confirm(
+        `Changing the category field will delete all existing mappings for this supplier. Are you sure you want to continue?\n\nThis action cannot be undone.`
+      )
+      
+      if (!confirmed) {
+        return // Don't change the field
       }
-
-      setExistingMappings(existingMappings.filter(m => m.id !== mappingId))
-    } catch (e: any) {
-      setError(e.message || 'Failed to remove mapping')
-    } finally {
-      setLoading(false)
+      
+      // Reset everything when changing field
+      setExistingMappings([])
+      setCategoriesLoaded(false)
+      setIsLocked(false)
     }
+    
+    setSelectedCategoryField(newField)
+  }
+  
+  const handleFieldCreated = (newField: any) => {
+    // Add the new field to the custom fields list
+    setAllCustomFields(prev => [...prev, newField])
+    setShowCreateFieldModal(false)
   }
 
   const getMappingForSupplierCategory = (supplierCategory: string) => {
@@ -341,312 +452,389 @@ export default function CategoryMappingInterface({
     )
   }
 
+  const handleSetMapping = (supplierCat: string, workspaceCatId: string) => {
+    const current = existingMappings.find(m => m.supplier_category === supplierCat)
+    
+    if (workspaceCatId === '') {
+      // Remove mapping locally
+      if (current?.id) handleRemoveMapping(current.id)
+      return
+    }
+    
+    if (current?.workspace_category_id === workspaceCatId) return
+    
+    // Remove existing mapping for this supplier category
+    if (current?.id) handleRemoveMapping(current.id)
+    
+    // Create new mapping locally
+    const newMapping = {
+      id: `temp-${Date.now()}`, // Temporary ID for local storage
+      supplier_id: supplierId,
+      supplier_category: supplierCat,
+      workspace_category_id: workspaceCatId,
+      mapping_type: 'manual',
+      rule_config: '{}',
+      created_at: new Date().toISOString()
+    }
+    
+    // Add to local mappings
+    setExistingMappings(prev => {
+      const filtered = prev.filter(m => m.supplier_category !== supplierCat)
+      return [...filtered, newMapping]
+    })
+  }
 
-  // Inline (tab) content: redesigned with better UX
+  // Inline (tab) content: table/grid style matching Field Mapping
   const inlineContent = (
     <div className="space-y-6">
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-600 text-sm">{error}</p>
-        </div>
-      )}
-
-      {successMessage && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-          <p className="text-green-600 text-sm">{successMessage}</p>
-        </div>
-      )}
-
-      {/* Header */}
-      <div>
-        <h3 className="text-lg font-semibold text-gray-900">Category Mapping</h3>
-        <p className="text-sm text-gray-500 mt-1">Map supplier product categories to your workspace taxonomy.</p>
-      </div>
-
-      {/* Step 1: Setup */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h4 className="text-sm font-medium text-gray-900">Step 1: Configure Category Field</h4>
-            <p className="text-xs text-gray-500">Set up which field contains categories in your supplier data.</p>
-          </div>
-          <div className="flex items-center space-x-2">
-            <span className="text-xs text-gray-500">Enable</span>
-            <label className="inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                className="sr-only"
-                checked={enableCategoryMapping}
-                onChange={(e) => setEnableCategoryMapping(e.target.checked)}
-              />
-              <div className={`w-11 h-6 rounded-full relative transition-colors ${
-                enableCategoryMapping ? 'bg-blue-600' : 'bg-gray-200'
-              }`}>
-                <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                  enableCategoryMapping ? 'translate-x-5' : 'translate-x-1'
-                }`}></span>
-              </div>
-            </label>
-          </div>
-        </div>
-
-        {enableCategoryMapping && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Product Field to Store Categories</label>
-                <div className="flex gap-2">
-                  <select
-                    value={customFields.find(f => f.name === categoryFieldName)?.id || ''}
-                    onChange={(e) => {
-                      const selected = customFields.find(f => f.id === e.target.value)
-                      if (selected) setCategoryFieldName(selected.name)
-                    }}
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    <option value="">Select existing field</option>
-                    {customFields.map(f => (
-                      <option key={f.id} value={f.id}>{f.name}</option>
-                    ))}
-                  </select>
-                  <Button onClick={() => setIsFieldModalOpen(true)} variant="outline" size="sm">+ New</Button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">This field will store the mapped category values.</p>
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Supplier Data Field</label>
-                <select
-                  value={categorySourceField}
-                  onChange={async (e) => {
-                    const v = e.target.value
-                    setCategorySourceField(v)
-                    if (v) {
-                      try {
-                        const qs = new URLSearchParams({ supplier_id: supplierId, field: v })
-                        const res = await fetch(`/api/categories/supplier-categories?${qs.toString()}`)
-                        const data = await res.json()
-                        if (res.ok) {
-                          const cats: string[] = data.categories || []
-                          setSupplierCategories(cats.map((name) => ({ name, count: 0 })))
-                        }
-                      } catch (err) {
-                        console.warn('Failed to fetch categories:', err)
-                      }
-                    }
-                  }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">Select field from supplier feed</option>
-                  {supplierKeys.map((k) => (
-                    <option key={k} value={k}>{k}</option>
-                  ))}
-                </select>
-                <p className="text-xs text-gray-500 mt-1">Which field in your supplier data contains categories?</p>
-              </div>
-            </div>
-
-            <div className="flex justify-end">
-              <Button 
-                onClick={handleSaveCategorySetup} 
-                disabled={savingSetup || !activeWorkspaceId || !categorySourceField || !categoryFieldName}
-              >
-                {savingSetup ? 'Saving…' : 'Save Configuration'}
-              </Button>
-            </div>
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-red-600 text-sm">{error}</p>
           </div>
         )}
-      </div>
-
-      {/* Step 2: Mapping */}
-      {setupCompleted && (
-        <div className="bg-white border border-gray-200 rounded-lg p-6">
-          <div className="mb-4">
-            <h4 className="text-sm font-medium text-gray-900">Step 2: Map Categories</h4>
-            <p className="text-xs text-gray-500">Connect supplier categories to your workspace categories.</p>
+        <div>
+          <h3 className="text-lg font-medium text-gray-900 mb-4">Category Mapping</h3>
+          <p className="text-sm text-gray-600 mb-4">Map supplier categories to your workspace categories.</p>
+          
+          {/* Category Field Selection and Enable Toggle */}
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h4 className="text-sm font-medium text-gray-900">Category Field Selection</h4>
+                <p className="text-xs text-gray-600">Select which field contains the category information</p>
+              </div>
+              <div className="flex items-center">
+                <label className="flex items-center">
+                  <span className="text-sm text-gray-700 mr-3">Enable Category Mapping</span>
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={categoryFieldEnabled}
+                      onChange={(e) => setCategoryFieldEnabled(e.target.checked)}
+                      disabled={isLocked}
+                      className="sr-only"
+                    />
+                    <div
+                      className={`w-11 h-6 rounded-full transition-colors duration-200 ease-in-out ${
+                        isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+                      } ${
+                        categoryFieldEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                      }`}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        if (!isLocked) {
+                          setCategoryFieldEnabled(!categoryFieldEnabled)
+                        }
+                      }}
+                    >
+                      <div
+                        className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-md transform transition-transform duration-200 ease-in-out pointer-events-none ${
+                          categoryFieldEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </div>
+            
+            {categoryFieldEnabled && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Select Category Field
+                </label>
+                <div className="flex gap-3">
+                  <select
+                    value={selectedCategoryField}
+                    onChange={(e) => handleFieldChange(e.target.value)}
+                    disabled={isLocked}
+                    className={`flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                  >
+                    <option value="">Select a field...</option>
+                    {sourceFields.map(field => (
+                      <option key={field} value={field}>{field}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => loadCategories()}
+                    disabled={loading || categoriesLoaded || !selectedCategoryField || isLocked}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm whitespace-nowrap"
+                  >
+                    {loading ? 'Loading...' : categoriesLoaded ? 'Categories Loaded' : 'Load Categories'}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  {selectedCategoryField 
+                    ? `Categories will be extracted from the "${selectedCategoryField}" field`
+                    : 'Please select a field to load categories from your supplier data.'
+                  }
+                </p>
+                {isLocked && (
+                  <div className="mt-2 flex items-center justify-between">
+                    <p className="text-xs text-green-600">
+                      🔒 Interface locked - Categories loaded and ready for mapping
+                    </p>
+                    <button
+                      onClick={handleUnlock}
+                      className="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors"
+                    >
+                      Unlock Interface
+                    </button>
+                  </div>
+                )}
+                {categoriesLoaded && (
+                  <p className="text-xs text-green-600 mt-1">
+                    ✅ Categories loaded successfully! You can now map them below.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
+          
+          {/* Target Field Selection - Show when category field is selected */}
+          {categoryFieldEnabled && selectedCategoryField && (
+            <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+              <div className="mb-3">
+                <h4 className="text-sm font-semibold text-gray-900 mb-1">Target Field for Category Replacement</h4>
+                <p className="text-xs text-gray-600">Select the custom field that will store the mapped category values</p>
+              </div>
+              
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <select
+                    value={selectedTargetFields[0] || ''}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        setSelectedTargetFields([e.target.value])
+                      } else {
+                        setSelectedTargetFields([])
+                      }
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-sm"
+                  >
+                    <option value="">-- Select a custom field --</option>
+                    {allCustomFields.map(field => (
+                      <option key={field.id} value={field.id}>
+                        {field.name} {field.use_for_category_mapping ? '(Active)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedTargetFields.length > 0 && (
+                    <p className="text-xs text-green-600 mt-1.5">
+                      ✓ This field will be marked for category mapping
+                    </p>
+                  )}
+                </div>
+                
+                <button
+                  onClick={() => setShowCreateFieldModal(true)}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium flex items-center gap-2 whitespace-nowrap"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                  Create New Field
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
 
-          {/* Search */}
+        {/* Search - Show when category mapping is enabled and categories are loaded */}
+        {categoryFieldEnabled && categoriesLoaded && (
           <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Search Categories</label>
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search categories..."
+              placeholder="Search supplier or workspace categories..."
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
+        )}
 
-          {/* Categories List */}
-          <div className="space-y-3 max-h-96 overflow-y-auto">
-            {filteredSupplierCategories.length === 0 ? (
-              <div className="text-center py-8">
-                <div className="text-gray-400 mb-2">
-                  <svg className="w-12 h-12 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                </div>
-                <p className="text-sm text-gray-500">No categories found</p>
-                <p className="text-xs text-gray-400 mt-1">Try selecting a different supplier field or check your data.</p>
+        {/* Mapping Grid - Show when category mapping is enabled */}
+        {categoryFieldEnabled && (
+          <>
+            {categoriesLoaded ? (
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-gray-900">Category Mapping</h4>
               </div>
-            ) : (
-              filteredSupplierCategories.map(category => {
+              <div className="grid grid-cols-12 gap-4 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <div className="col-span-4">Supplier Category</div>
+                <div className="col-span-1"></div>
+                <div className="col-span-5">Workspace Category</div>
+                <div className="col-span-1 text-right">Products</div>
+                <div className="col-span-1">Action</div>
+              </div>
+            </div>
+            <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
+              {filteredSupplierCategories.map(category => {
                 const mapping = getMappingForSupplierCategory(category.name)
                 return (
-                  <div key={category.name} className="flex items-center space-x-4 p-3 border border-gray-200 rounded-lg hover:bg-gray-50">
-                    <div className="flex-1">
-                      <div className="font-medium text-sm text-gray-900">{category.name}</div>
-                      <div className="text-xs text-gray-500">{category.count} products</div>
-                    </div>
-                    
-                    <div className="flex items-center space-x-2">
-                      <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                      </svg>
-                    </div>
-                    
-                    <div className="flex-1">
-                      <select
-                        value={mapping?.workspace_category_id || ''}
-                        onChange={(e) => {
-                          // Store the selection locally, don't save yet
-                          const newMappings = [...existingMappings]
-                          const existingIndex = newMappings.findIndex(m => m.supplier_category === category.name)
-                          
-                          if (e.target.value === '') {
-                            // Remove mapping
-                            if (existingIndex >= 0) {
-                              newMappings.splice(existingIndex, 1)
-                            }
-                          } else {
-                            // Add or update mapping
-                            const newMapping = {
-                              id: existingMappings.find(m => m.supplier_category === category.name)?.id,
-                              supplier_category: category.name,
-                              workspace_category_id: e.target.value,
-                              workspace_categories: workspaceCategories.find(c => c.id === e.target.value)
-                            }
-                            
-                            if (existingIndex >= 0) {
-                              newMappings[existingIndex] = newMapping
-                            } else {
-                              newMappings.push(newMapping)
-                            }
-                          }
-                          
-                          setExistingMappings(newMappings)
-                        }}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      >
-                        <option value="">Select workspace category</option>
-                        {filteredWorkspaceCategories.map(cat => (
-                          <option key={cat.id} value={cat.id}>{cat.path}</option>
-                        ))}
-                      </select>
-                    </div>
-                    
-                    <div className="flex items-center space-x-2">
-                      {mapping ? (
-                        <button 
-                          onClick={() => handleRemoveMapping(mapping.id!)} 
-                          className="text-red-600 hover:text-red-700 p-1"
-                          title="Remove mapping"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      ) : (
-                        <span className="text-gray-300">-</span>
-                      )}
+                  <div key={category.name} className="px-4 py-3 hover:bg-gray-50">
+                    <div className="grid grid-cols-12 gap-4 items-center">
+                      <div className="col-span-4">
+                        <div className="font-medium text-sm text-gray-900">{category.name}</div>
+                      </div>
+                      <div className="col-span-1 text-center">
+                        <svg className="w-4 h-4 text-gray-400 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                        </svg>
+                      </div>
+                      <div className="col-span-5">
+                        <HierarchicalCategorySelect
+                          categories={workspaceCategories}
+                          value={mapping?.workspace_category_id || ''}
+                          onChange={(categoryId) => handleSetMapping(category.name, categoryId)}
+                          placeholder="Select workspace category"
+                          className="text-sm"
+                        />
+                      </div>
+                      <div className="col-span-1 text-right">
+                        <span className="text-xs text-gray-600">{category.count}</span>
+                      </div>
+                      <div className="col-span-1 text-center">
+                        {mapping ? (
+                          <button
+                            onClick={() => handleRemoveMapping(mapping.id!)}
+                            className="text-red-600 hover:text-red-800"
+                            title="Remove mapping"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )
-              })
+              })}
+            </div>
+          </div>
+            ) : (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
+                <div className="text-yellow-600 mb-2">
+                  <svg className="w-12 h-12 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-medium text-yellow-900 mb-2">Select Field and Load Categories</h3>
+                <p className="text-yellow-700 text-sm">
+                  Please select a category field above and click "Load Categories" to start mapping.
+                </p>
+              </div>
             )}
-          </div>
+          </>
+        )}
 
-          {/* Save Button */}
-          <div className="flex justify-end pt-4 border-t">
-            <Button 
-              onClick={async () => {
-                try {
-                  setLoading(true)
-                  setError(null)
-                  
-                  // Save all mappings
-                  const savePromises = existingMappings.map(async (mapping) => {
-                    const res = await fetch('/api/categories/mappings', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        supplier_id: supplierId,
-                        supplier_category: mapping.supplier_category,
-                        workspace_category_id: mapping.workspace_category_id
-                      })
-                    })
-                    if (!res.ok) {
-                      const data = await res.json()
-                      throw new Error(data.error || 'Failed to save mapping')
-                    }
-                    return res.json()
-                  })
-                  
-                  await Promise.all(savePromises)
-                  setError(null)
-                  // Refresh the data to show updated mappings
-                  await fetchData()
-                } catch (e: any) {
-                  setError(e.message || 'Failed to save mappings')
-                } finally {
-                  setLoading(false)
-                }
-              }}
-              disabled={loading}
-            >
-              {loading ? 'Saving…' : 'Save All Mappings'}
-            </Button>
+        {/* Summary Cards - Show when category mapping is enabled */}
+        {categoryFieldEnabled && (
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="text-sm font-medium text-blue-900">Supplier Categories</div>
+              <div className="text-2xl font-bold text-blue-900">{supplierCategories.length}</div>
+            </div>
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <div className="text-sm font-medium text-green-900">Mapped Categories</div>
+              <div className="text-2xl font-bold text-green-900">{existingMappings.length}</div>
+            </div>
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+              <div className="text-sm font-medium text-gray-900">Workspace Categories</div>
+              <div className="text-2xl font-bold text-gray-900">{workspaceCategories.length}</div>
+            </div>
           </div>
-        </div>
-      )}
-
-      {/* Summary */}
-      {setupCompleted && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <div className="text-sm font-medium text-blue-900">Supplier Categories</div>
-            <div className="text-2xl font-bold text-blue-900">{supplierCategories.length}</div>
-          </div>
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-            <div className="text-sm font-medium text-green-900">Mapped</div>
-            <div className="text-2xl font-bold text-green-900">{existingMappings.length}</div>
-          </div>
-          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-            <div className="text-sm font-medium text-gray-900">Workspace Categories</div>
-            <div className="text-2xl font-bold text-gray-900">{workspaceCategories.length}</div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Field Modal */}
-      {isFieldModalOpen && (
-        <FieldFormModal
-          isOpen={isFieldModalOpen}
-          onClose={() => setIsFieldModalOpen(false)}
-          onSuccess={(field) => {
-            setCustomFields(prev => [...prev, { id: field.id, key: field.key, name: field.name }])
-            setCategoryFieldName(field.name)
-          }}
-        />
-      )}
+        )}
     </div>
   )
 
   if (inline) {
     return (
-      <div>
-        {inlineContent}
-      </div>
+      <>
+        <div>
+          {inlineContent}
+        </div>
+        
+        {/* Unlock Warning Modal */}
+        {showUnlockWarning && (
+          <Modal 
+            isOpen={true} 
+            onClose={() => {}} 
+            title="Unlock Interface"
+            footer={
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={handleCancelUnlock}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmUnlock}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                >
+                  Yes, Unlock Interface
+                </button>
+              </div>
+            }
+          >
+            <div className="space-y-4">
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                <div className="flex">
+                  <div className="flex-shrink-0">
+                    <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                  <div className="ml-3">
+                    <h3 className="text-sm font-medium text-red-800">
+                      Warning: This will delete all existing mappings
+                    </h3>
+                    <div className="mt-2 text-sm text-red-700">
+                      <p>
+                        Unlocking the interface will:
+                      </p>
+                      <ul className="list-disc list-inside mt-2 space-y-1">
+                        <li>Delete all current category mappings for this supplier</li>
+                        <li>Reset the categories loaded state</li>
+                        <li>Allow you to select a different category field</li>
+                        <li>Require you to reload categories from the new field</li>
+                      </ul>
+                      <p className="mt-2 font-medium">
+                        This action cannot be undone. Are you sure you want to continue?
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Modal>
+        )}
+        
+        {/* Save Settings Button - Always visible to save toggle state */}
+        <div className="mt-6 flex justify-end">
+          <button
+            onClick={handleSaveSettings}
+            disabled={saving || !hasUnsavedChanges}
+            className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm font-medium"
+          >
+            {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
+        
+        {/* Create Field Modal */}
+        <FieldFormModal
+          isOpen={showCreateFieldModal}
+          onClose={() => setShowCreateFieldModal(false)}
+          onSuccess={handleFieldCreated}
+        />
+      </>
     )
   }
 
@@ -659,128 +847,360 @@ export default function CategoryMappingInterface({
         </div>
       )}
 
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <h3 className="text-sm font-medium text-blue-900 mb-3">Quick Mapping</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {/* Category Field Selection and Enable Toggle for Modal */}
+      <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-4">
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Supplier Category</label>
-            <select
-              value={selectedSupplierCategory}
-              onChange={(e) => setSelectedSupplierCategory(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="">Select supplier category</option>
-              {filteredSupplierCategories.map(cat => (
-                <option key={cat.name} value={cat.name}>
-                  {cat.name} ({cat.count} products)
-                </option>
-              ))}
-            </select>
+            <h4 className="text-sm font-medium text-gray-900">Category Field Selection</h4>
+            <p className="text-xs text-gray-600">Select which field contains the category information</p>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">Workspace Category</label>
-            <select
-              value={selectedWorkspaceCategory}
-              onChange={(e) => setSelectedWorkspaceCategory(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="">Select workspace category</option>
-              {filteredWorkspaceCategories.map(cat => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.path}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center">
+            <label className="flex items-center">
+              <span className="text-sm text-gray-700 mr-3">Enable Category Mapping</span>
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  checked={categoryFieldEnabled}
+                  onChange={(e) => setCategoryFieldEnabled(e.target.checked)}
+                  disabled={isLocked}
+                  className="sr-only"
+                />
+                <div
+                  className={`w-11 h-6 rounded-full transition-colors duration-200 ease-in-out ${
+                    isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
+                  } ${
+                    categoryFieldEnabled ? 'bg-blue-600' : 'bg-gray-300'
+                  }`}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    if (!isLocked) {
+                      setCategoryFieldEnabled(!categoryFieldEnabled)
+                    }
+                  }}
+                >
+                  <div
+                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-md transform transition-transform duration-200 ease-in-out pointer-events-none ${
+                      categoryFieldEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </div>
+              </div>
+            </label>
           </div>
         </div>
-        <div className="mt-3">
-          <Button
-            onClick={handleCreateMapping}
-            disabled={!selectedSupplierCategory || !selectedWorkspaceCategory || loading}
-            size="sm"
-          >
-            {loading ? 'Creating...' : 'Create Mapping'}
-          </Button>
-        </div>
-      </div>
-
-      <div>
-        <h3 className="text-sm font-medium text-gray-900 mb-3">
-          Supplier Categories ({filteredSupplierCategories.length})
-        </h3>
-        <div className="max-h-64 overflow-y-auto space-y-2">
-          {filteredSupplierCategories.map(category => {
-            const mapping = getMappingForSupplierCategory(category.name)
-            return (
-              <div
-                key={category.name}
-                className={`flex items-center justify-between p-3 rounded-lg border ${
-                  mapping 
-                    ? 'bg-green-50 border-green-200' 
-                    : 'bg-gray-50 border-gray-200'
-                }`}
+        
+        {categoryFieldEnabled && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Select Category Field
+            </label>
+            <div className="flex gap-3">
+              <select
+                value={selectedCategoryField}
+                onChange={(e) => handleFieldChange(e.target.value)}
+                disabled={isLocked}
+                className={`flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
               >
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-gray-900">{category.name}</span>
-                    <span className="text-xs text-gray-500">({category.count} products)</span>
-                  </div>
-                  {mapping && (
-                    <div className="text-sm text-green-700 mt-1">
-                      → {mapping.workspace_categories?.path || 'Mapped'}
-                    </div>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  {mapping ? (
-                    <Button
-                      onClick={() => handleRemoveMapping(mapping.id!)}
-                      variant="danger"
-                      size="sm"
-                    >
-                      Remove
-                    </Button>
-                  ) : (
-                    <Button
-                      onClick={() => {
-                        setSelectedSupplierCategory(category.name)
-                        setSelectedWorkspaceCategory('')
-                      }}
-                      variant="outline"
-                      size="sm"
-                    >
-                      Map
-                    </Button>
-                  )}
-                </div>
+                <option value="">Select a field...</option>
+                {sourceFields.map(field => (
+                  <option key={field} value={field}>{field}</option>
+                ))}
+              </select>
+              <button
+                onClick={() => loadCategories()}
+                disabled={loading || categoriesLoaded || !selectedCategoryField || isLocked}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm whitespace-nowrap"
+              >
+                {loading ? 'Loading...' : categoriesLoaded ? 'Categories Loaded' : 'Load Categories'}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              {selectedCategoryField 
+                ? `Categories will be extracted from the "${selectedCategoryField}" field`
+                : 'Please select a field to load categories from your supplier data.'
+              }
+            </p>
+            {isLocked && (
+              <div className="mt-2 flex items-center justify-between">
+                <p className="text-xs text-green-600">
+                  🔒 Interface locked - Categories loaded and ready for mapping
+                </p>
+                <button
+                  onClick={handleUnlock}
+                  className="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded-md hover:bg-red-700 transition-colors"
+                >
+                  Unlock Interface
+                </button>
               </div>
-            )
-          })}
-        </div>
+            )}
+            {categoriesLoaded && (
+              <p className="text-xs text-green-600 mt-1">
+                ✅ Categories loaded successfully! You can now map them below.
+              </p>
+            )}
+          </div>
+        )}
+        
+        {/* Target Fields Selection - Show when category field is selected */}
+        {categoryFieldEnabled && selectedCategoryField && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <h4 className="text-sm font-medium text-gray-900">Target Fields for Category Replacement</h4>
+                <p className="text-xs text-gray-600">Select which fields will be updated with mapped category values</p>
+              </div>
+            </div>
+            
+            <div className="flex gap-3 mt-3">
+              <select
+                multiple
+                value={selectedTargetFields}
+                onChange={(e) => {
+                  const values = Array.from(e.target.selectedOptions, option => option.value)
+                  setSelectedTargetFields(values)
+                }}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                size={6}
+              >
+                {allCustomFields.length === 0 ? (
+                  <option disabled>No custom fields available</option>
+                ) : (
+                  allCustomFields.map(field => (
+                    <option key={field.id} value={field.id}>
+                      {field.name} ({field.key}) {field.use_for_category_mapping ? '✓' : ''}
+                    </option>
+                  ))
+                )}
+              </select>
+              <button
+                onClick={() => setShowCreateFieldModal(true)}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm whitespace-nowrap"
+              >
+                Create New Field
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              {selectedTargetFields.length > 0 
+                ? `✓ ${selectedTargetFields.length} custom field(s) will be marked for category mapping`
+                : 'Select custom fields to enable for category mapping (Hold Ctrl/Cmd for multiple)'
+              }
+            </p>
+          </div>
+        )}
       </div>
 
-      {existingMappings.length > 0 && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-          <h3 className="text-sm font-medium text-gray-900 mb-3">
-            Current Mappings ({existingMappings.length})
-          </h3>
-          <div className="space-y-2">
-            {existingMappings.map(mapping => (
-              <div key={mapping.id} className="flex items-center justify-between text-sm">
-                <span className="text-gray-600">{mapping.supplier_category}</span>
-                <span className="text-gray-400">→</span>
-                <span className="text-gray-900">{mapping.workspace_categories?.path}</span>
-              </div>
-            ))}
+      {categoryFieldEnabled && categoriesLoaded && (
+        <>
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <h3 className="text-sm font-medium text-blue-900 mb-3">Quick Mapping</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Supplier Category</label>
+              <select
+                value={selectedSupplierCategory}
+                onChange={(e) => setSelectedSupplierCategory(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">Select supplier category</option>
+                {filteredSupplierCategories.map(cat => (
+                  <option key={cat.name} value={cat.name}>
+                    {cat.name} ({cat.count} products)
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Workspace Category</label>
+              <HierarchicalCategorySelect
+                categories={workspaceCategories}
+                value={selectedWorkspaceCategory}
+                onChange={setSelectedWorkspaceCategory}
+                placeholder="Select workspace category"
+                className="text-sm"
+              />
+            </div>
+          </div>
+          <div className="mt-3">
+            <Button
+              onClick={handleCreateMapping}
+              disabled={!selectedSupplierCategory || !selectedWorkspaceCategory || loading}
+              size="sm"
+            >
+              {loading ? 'Creating...' : 'Create Mapping'}
+            </Button>
           </div>
         </div>
+
+        <div>
+            <h3 className="text-sm font-medium text-gray-900 mb-3">
+              Supplier Categories ({filteredSupplierCategories.length})
+            </h3>
+            <div className="max-h-64 overflow-y-auto space-y-2">
+              {filteredSupplierCategories.map(category => {
+                const mapping = getMappingForSupplierCategory(category.name)
+                return (
+                  <div
+                    key={category.name}
+                    className={`flex items-center justify-between p-3 rounded-lg border ${
+                      mapping 
+                        ? 'bg-green-50 border-green-200' 
+                        : 'bg-gray-50 border-gray-200'
+                    }`}
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-gray-900">{category.name}</span>
+                        <span className="text-xs text-gray-500">({category.count} products)</span>
+                      </div>
+                      {mapping && (
+                        <div className="text-sm text-green-700 mt-1">
+                          → {mapping.custom_categories?.path || 'Mapped'}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      {mapping ? (
+                        <Button
+                          onClick={() => handleRemoveMapping(mapping.id!)}
+                          variant="danger"
+                          size="sm"
+                        >
+                          Remove
+                        </Button>
+                      ) : (
+                        <Button
+                          onClick={() => {
+                            setSelectedSupplierCategory(category.name)
+                            setSelectedWorkspaceCategory('')
+                          }}
+                          variant="outline"
+                          size="sm"
+                        >
+                          Map
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {existingMappings.length > 0 && (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+              <h3 className="text-sm font-medium text-gray-900 mb-3">
+                Current Mappings ({existingMappings.length})
+              </h3>
+              <div className="space-y-2">
+                {existingMappings.map(mapping => (
+                  <div key={mapping.id} className="flex items-center justify-between text-sm">
+                    <span className="text-gray-600">{mapping.supplier_category}</span>
+                    <span className="text-gray-400">→</span>
+                    <span className="text-gray-900">{mapping.custom_categories?.path}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
+
+      {!categoryFieldEnabled ? (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+          <div className="text-blue-600 mb-2">
+            <svg className="w-12 h-12 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-medium text-blue-900 mb-2">Category Mapping Disabled</h3>
+          <p className="text-blue-700 text-sm">
+            Enable category mapping above to start mapping supplier categories to your workspace categories.
+          </p>
+        </div>
+      ) : !categoriesLoaded ? (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
+          <div className="text-yellow-600 mb-2">
+            <svg className="w-12 h-12 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-medium text-yellow-900 mb-2">Select Field and Load Categories</h3>
+          <p className="text-yellow-700 text-sm">
+            Please select a category field above and click "Load Categories" to start mapping.
+          </p>
+        </div>
+      ) : null}
     </div>
   )
 
   return (
-    <Modal isOpen={true} onClose={onClose!} title={`Quick Mapping - ${supplierName}`}>
-      {modalContent}
-    </Modal>
+    <>
+      <Modal isOpen={true} onClose={onClose!} title={`Quick Mapping - ${supplierName}`}>
+        {modalContent}
+      </Modal>
+      
+      {/* Unlock Warning Modal */}
+      {showUnlockWarning && (
+        <Modal 
+          isOpen={true} 
+          onClose={() => {}} 
+          title="Unlock Interface"
+          footer={
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={handleCancelUnlock}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmUnlock}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+              >
+                Yes, Unlock Interface
+              </button>
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="flex">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <h3 className="text-sm font-medium text-red-800">
+                    Warning: This will delete all existing mappings
+                  </h3>
+                  <div className="mt-2 text-sm text-red-700">
+                    <p>
+                      Unlocking the interface will:
+                    </p>
+                    <ul className="list-disc list-inside mt-2 space-y-1">
+                      <li>Delete all current category mappings for this supplier</li>
+                      <li>Reset the categories loaded state</li>
+                      <li>Allow you to select a different category field</li>
+                      <li>Require you to reload categories from the new field</li>
+                    </ul>
+                    <p className="mt-2 font-medium">
+                      This action cannot be undone. Are you sure you want to continue?
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+      
+      {/* Create Field Modal */}
+      <FieldFormModal
+        isOpen={showCreateFieldModal}
+        onClose={() => setShowCreateFieldModal(false)}
+        onSuccess={handleFieldCreated}
+      />
+    </>
   )
 }

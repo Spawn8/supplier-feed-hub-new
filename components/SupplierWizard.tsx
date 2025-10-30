@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import { useWorkspace } from '@/lib/workspaceContext'
 import LoadingOverlay from './ui/LoadingOverlay'
 import CategoryMappingInterface from '@/components/CategoryMappingInterface'
+import UniversalFieldMapping from './UniversalFieldMapping'
 
 interface SupplierWizardProps {
   onSuccess: (supplier: any) => void
@@ -21,6 +22,9 @@ interface SupplierData {
   schedule_cron: string
   schedule_enabled: boolean
   uploaded_file?: File
+  settings?: {
+    uid_source_key?: string
+  }
 }
 
 interface FieldMapping {
@@ -61,13 +65,6 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
   const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([])
   const [createdSupplierId, setCreatedSupplierId] = useState<string | null>(null)
 
-  // Debug fieldMappings changes
-  useEffect(() => {
-    console.log('🔄 Field mappings state changed:', fieldMappings)
-    console.log('🔄 Field mappings length:', fieldMappings.length)
-    console.log('🔄 Source fields length:', sourceFields.length)
-    console.log('🔄 Current step:', currentStep)
-  }, [fieldMappings, sourceFields, currentStep])
   
   // Step 3: UID Selection
   const [uidSourceKey, setUidSourceKey] = useState<string>('')
@@ -75,7 +72,6 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
   // Step 4: Import Results
   const [importResults, setImportResults] = useState<any>(null)
   const [importing, setImporting] = useState(false)
-  const [showCategoryMapping, setShowCategoryMapping] = useState(false)
 
   useEffect(() => {
     if (activeWorkspaceId && (currentStep === 2 || currentStep === 3)) {
@@ -125,12 +121,16 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
         } catch {}
 
         if (!hasMappings) nextStep = 2
-        else if (!hasUid) nextStep = 3
-        else nextStep = 4
+        else if (!hasUid) nextStep = 4  // Skip category mapping, go to UID selection
+        else nextStep = 5  // Go to import & schedule
+
+        // Set the UID source key if it exists
+        if (hasUid && s.settings?.uid_source_key) {
+          setUidSourceKey(s.settings.uid_source_key)
+        }
 
         setCurrentStep(nextStep)
       } catch (e: any) {
-        console.error('Resume wizard error:', e)
         setError(e?.message || 'Failed to resume wizard')
       } finally {
         setBusy(false)
@@ -147,22 +147,30 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
         setCustomFields(data.fields || [])
       }
     } catch (err) {
-      console.error('Error fetching custom fields:', err)
     } finally {
       setBusy(false)
     }
+  }
+
+  const handleFieldCreated = (newField: any) => {
+    // Add the new field to the end of the custom fields list
+    setCustomFields(prev => [...prev, newField])
+  }
+
+  const handleFieldUpdated = (updatedField: any) => {
+    // Update the field in the custom fields list
+    setCustomFields(prev => prev.map(field => 
+      field.id === updatedField.id ? updatedField : field
+    ))
   }
 
   const fetchSourceFields = async () => {
     try {
       if (!createdSupplierId) return
       
-      console.log('🔍 Fetching source fields for supplier:', createdSupplierId)
-      console.log('📁 Source type:', supplierData.source_type)
       
       // If we have an uploaded file, extract fields from it
       if (supplierData.source_type === 'upload' && supplierData.uploaded_file) {
-        console.log('📤 Uploading file for field extraction:', supplierData.uploaded_file.name)
         
         const formData = new FormData()
         formData.append('file', supplierData.uploaded_file)
@@ -175,11 +183,9 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
         })
         
         const data = await response.json()
-        console.log('📋 Field extraction response:', data)
         
         if (response.ok) {
           const extractedFields = data.fields || []
-          console.log('✅ Extracted fields from uploaded file:', extractedFields)
           setSourceFields(extractedFields)
           
           if (extractedFields.length === 0) {
@@ -192,34 +198,26 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
         (supplierData.source_type === 'url' && supplierData.endpoint_url) ||
         (supplierData.source_type === 'upload' && !supplierData.uploaded_file && createdSupplierId)
       ) {
-        console.log('🌐 Fetching fields from URL:', supplierData.endpoint_url)
-        console.log('🆔 Using supplier ID:', createdSupplierId)
-        console.log('🏢 Using workspace ID:', activeWorkspaceId)
         
         // Fetch sample keys from source (URL or stored upload)
         setBusy(true)
         const response = await fetch(`/api/suppliers/${createdSupplierId}/sample-keys?workspace_id=${activeWorkspaceId}`)
         const data = await response.json()
-        console.log('📋 Sample keys response:', data)
-        console.log('🔗 Response status:', response.status, response.statusText)
         
         if (response.ok) {
           const extractedFields = data.keys || []
-          console.log('✅ Extracted fields from URL:', extractedFields)
           setSourceFields(extractedFields)
           
           if (extractedFields.length === 0) {
             setError('No fields found in the data source. Please check the URL and format.')
           }
         } else {
-          console.error('❌ Sample keys API error:', data)
           throw new Error(data.error || 'Failed to fetch fields from URL')
         }
       } else {
         setError('Please provide either a file upload or a URL to extract fields from.')
       }
     } catch (err) {
-      console.error('❌ Error fetching source fields:', err)
       setError(err instanceof Error ? err.message : 'Failed to extract fields from your data source. Please check your file format or URL.')
     } finally {
       setBusy(false)
@@ -274,14 +272,11 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
       }
 
         // Store the created supplier ID
-        console.log('✅ Supplier created successfully:', data.supplier)
-        console.log('🆔 Setting supplier ID:', data.supplier.id)
         setCreatedSupplierId(data.supplier.id)
 
         // Move to step 2 (field mapping)
         setCurrentStep(2)
     } catch (err) {
-      console.error('Error creating supplier:', err)
       setError(err instanceof Error ? err.message : 'Failed to create supplier')
     } finally {
       setLoading(false)
@@ -316,7 +311,6 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
       // Move to step 3 (import)
       setCurrentStep(3)
     } catch (err) {
-      console.error('Error saving field mappings:', err)
       setError(err instanceof Error ? err.message : 'Failed to save field mappings')
     } finally {
       setLoading(false)
@@ -325,6 +319,11 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
   }
 
   const handleStep3Submit = async () => {
+    // Category mapping step is optional, proceed to UID selection
+    setCurrentStep(4)
+  }
+
+  const handleStep4Submit = async () => {
     if (!uidSourceKey) {
       setError('Please select a unique identifier field')
       return
@@ -363,16 +362,15 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
         }
       }))
       
-      setCurrentStep(4)
+      setCurrentStep(5)
     } catch (err) {
-      console.error('Error setting UID source key:', err)
       setError(err instanceof Error ? err.message : 'Failed to set UID source key')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleStep4Submit = async () => {
+  const handleStep5Submit = async () => {
     setImporting(true)
     setBusy(true)
     setError(null)
@@ -384,7 +382,7 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
       if (supplierData.uploaded_file) {
         // If we have an uploaded file, send it as FormData
         const formData = new FormData()
-        formData.append('supplier_id', createdSupplierId)
+        formData.append('supplier_id', createdSupplierId || '')
         formData.append('mappings', JSON.stringify(fieldMappings))
         formData.append('file', supplierData.uploaded_file)
         
@@ -415,7 +413,6 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
       setImportResults(data.results)
       // No automatic redirect - let user choose where to go
     } catch (err) {
-      console.error('Error importing supplier:', err)
       setError(err instanceof Error ? err.message : 'Failed to import supplier')
     } finally {
       setImporting(false)
@@ -423,30 +420,6 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
     }
   }
 
-  const handleFieldMapping = (customFieldId: string, sourceField: string) => {
-    console.log('🔗 Mapping field:', { customFieldId, sourceField })
-    console.log('🔗 Current fieldMappings before update:', fieldMappings)
-    
-    setFieldMappings(prev => {
-      console.log('🔗 Previous fieldMappings:', prev)
-      const existing = prev.find(m => m.custom_field_id === customFieldId)
-      console.log('🔗 Existing mapping found:', existing)
-      
-      if (existing) {
-        const updated = prev.map(m => 
-          m.custom_field_id === customFieldId 
-            ? { ...m, source_field: sourceField }
-            : m
-        )
-        console.log('📝 Updated field mappings:', updated)
-        return updated
-      } else {
-        const added = [...prev, { custom_field_id: customFieldId, source_field: sourceField }]
-        console.log('➕ Added field mapping:', added)
-        return added
-      }
-    })
-  }
 
   const BusyBanner = () => (
     (busy || loading || importing) ? (
@@ -637,167 +610,45 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
   const renderStep2 = () => (
     <div className="space-y-6">
       <BusyBanner />
-      <div>
-        <h3 className="text-lg font-medium text-gray-900 mb-4">Field Mapping</h3>
-        <p className="text-sm text-gray-600 mb-6">
-          Drag and drop to map your custom fields to the source fields from your data.
-        </p>
-        
-        {fieldMappings.length === 0 && sourceFields.length > 0 && (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
-            <div className="flex items-center">
-              <svg className="w-5 h-5 text-yellow-600 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-              <div>
-                <p className="text-sm font-medium text-yellow-800">Field Mapping Required</p>
-                <p className="text-sm text-yellow-700">Please map at least one custom field to a source field to continue.</p>
-              </div>
+      
+      {fieldMappings.length === 0 && sourceFields.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+          <div className="flex items-center">
+            <svg className="w-5 h-5 text-yellow-600 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            <div>
+              <p className="text-sm font-medium text-yellow-800">Field Mapping Required</p>
+              <p className="text-sm text-yellow-700">Please map at least one custom field to a source field to continue.</p>
             </div>
           </div>
-        )}
-        
-        {/* Debug info */}
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
-          <div className="text-sm text-gray-600">
-            <p><strong>Debug Info:</strong></p>
-            <p>Field Mappings: {fieldMappings.length}</p>
-            <p>Source Fields: {sourceFields.length}</p>
-            <p>Current Step: {currentStep}</p>
-            <p>Field Mappings: {JSON.stringify(fieldMappings)}</p>
-          </div>
         </div>
-        
-        {/* Mapping Table */}
-        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-          <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
-            <div className="grid grid-cols-12 gap-4 text-xs font-medium text-gray-700 uppercase tracking-wider">
-              <div className="col-span-4">Custom Field</div>
-              <div className="col-span-1 text-center">→</div>
-              <div className="col-span-4">Source Field</div>
-              <div className="col-span-2">Data Type</div>
-              <div className="col-span-1">Action</div>
-            </div>
-          </div>
-          
-          <div className="divide-y divide-gray-200">
-            {customFields.map((field, index) => (
-              <div key={field.id} className="px-4 py-3 hover:bg-gray-50">
-                <div className="grid grid-cols-12 gap-4 items-center">
-                  <div className="col-span-4">
-                    <div className="font-medium text-sm text-gray-900">{field.name}</div>
-                    <div className="text-xs text-gray-500">{field.description || 'No description'}</div>
-                  </div>
-                  
-                  <div className="col-span-1 text-center">
-                    <svg className="w-4 h-4 text-gray-400 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                    </svg>
-                  </div>
-                  
-                  <div className="col-span-4">
-                    <select
-                      value={fieldMappings.find(m => m.custom_field_id === field.id)?.source_field || ''}
-                      onChange={(e) => handleFieldMapping(field.id, e.target.value)}
-                      className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    >
-                      <option value="">Select source field</option>
-                      {sourceFields.map((sourceField) => (
-                        <option key={sourceField} value={sourceField}>
-                          {sourceField}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  
-                  <div className="col-span-2">
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      {field.datatype}
-                    </span>
-                  </div>
-                  
-                  <div className="col-span-1 text-center">
-                    {fieldMappings.find(m => m.custom_field_id === field.id) ? (
-                      <button
-                        onClick={() => handleFieldMapping(field.id, '')}
-                        className="text-red-600 hover:text-red-800"
-                        title="Remove mapping"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    ) : (
-                      <span className="text-gray-400">-</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      )}
+      
+      
+      {/* Universal Field Mapping Component */}
+      <UniversalFieldMapping
+        customFields={customFields}
+        sourceFields={sourceFields}
+        fieldMappings={fieldMappings}
+        supplierId={createdSupplierId || ''}
+        workspaceId={activeWorkspaceId!}
+        onMappingsChange={setFieldMappings}
+        onFieldCreated={handleFieldCreated}
+        onFieldUpdated={handleFieldUpdated}
+        showAddNewField={true}
+        showEditFields={true}
+        showActionButtons={false}
+      />
 
-        {/* Available Source Fields */}
-        <div className="mt-6">
-          <h4 className="text-sm font-medium text-gray-900 mb-3">Available Source Fields</h4>
-          <div className="flex flex-wrap gap-2">
-            {sourceFields.map((field) => {
-              const isMapped = fieldMappings.some(m => m.source_field === field)
-              return (
-                <span
-                  key={field}
-                  className={`inline-flex items-center px-3 py-1 rounded-full text-sm ${
-                    isMapped 
-                      ? 'bg-green-100 text-green-800' 
-                      : 'bg-gray-100 text-gray-800'
-                  }`}
-                >
-                  {field}
-                  {isMapped && (
-                    <svg className="w-3 h-3 ml-1" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                    </svg>
-                  )}
-                </span>
-              )
-            })}
+      {/* Warning for no mappings */}
+      {fieldMappings.length === 0 && (
+        <div className="mt-6 flex justify-center">
+          <div className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            ⚠️ No fields mapped yet. Please map at least one field to continue.
           </div>
         </div>
-
-        {/* Mapping Summary */}
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <div className="text-sm font-medium text-blue-900">Total Custom Fields</div>
-            <div className="text-2xl font-bold text-blue-600">{customFields.length}</div>
-          </div>
-          
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-            <div className="text-sm font-medium text-green-900">Mapped Fields</div>
-            <div className="text-2xl font-bold text-green-600">{fieldMappings.length}</div>
-          </div>
-          
-          <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-            <div className="text-sm font-medium text-orange-900">Available Source Fields</div>
-            <div className="text-2xl font-bold text-orange-600">{sourceFields.length}</div>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="mt-6 flex justify-between items-center">
-          <button
-            onClick={() => window.open('/fields', '_blank')}
-            className="text-sm text-blue-600 hover:text-blue-800 underline"
-          >
-            Manage Custom Fields
-          </button>
-          
-          {fieldMappings.length === 0 && (
-            <div className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              ⚠️ No fields mapped yet. Please map at least one field to continue.
-            </div>
-          )}
-        </div>
-      </div>
+      )}
     </div>
   )
 
@@ -805,32 +656,82 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
     <div className="space-y-6">
       <BusyBanner />
       <div>
-        <h3 className="text-lg font-medium text-gray-900 mb-2">Category Mapping</h3>
-        <p className="text-sm text-gray-600 mb-4">Map supplier categories to your workspace categories. You can skip for now and do it later from the supplier edit page.</p>
+        <h3 className="text-lg font-medium text-gray-900 mb-2">Category Mapping (Optional)</h3>
+        <p className="text-sm text-gray-600 mb-6">
+          Map supplier categories to your workspace categories. This step is optional - you can skip it now and set it up later from the supplier edit page.
+        </p>
 
-        <div className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg p-4">
-          <div className="text-sm text-gray-700">Open the category mapping dialog to create or review mappings.</div>
-          <button
-            onClick={() => setShowCategoryMapping(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            Open Mapper
-          </button>
-        </div>
-        
-        {showCategoryMapping && createdSupplierId && (
-          <CategoryMappingInterface
-            supplierId={createdSupplierId}
-            supplierName={supplierData.name || 'Supplier'}
-            onClose={() => setShowCategoryMapping(false)}
-            onMappingCreated={() => {}}
-          />
+        {createdSupplierId ? (
+          <div className="bg-white rounded-lg">
+            <CategoryMappingInterface
+              supplierId={createdSupplierId}
+              supplierName={supplierData.name || 'Supplier'}
+              inline
+              sourceFields={sourceFields}
+              onMappingCreated={(mapping) => {
+                console.log('Category mapping created:', mapping)
+              }}
+            />
+          </div>
+        ) : (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <p className="text-sm text-yellow-700">Supplier must be created before setting up category mappings.</p>
+          </div>
         )}
       </div>
     </div>
   )
 
   const renderStep4 = () => (
+    <div className="space-y-6">
+      <BusyBanner />
+      <div>
+        <h3 className="text-lg font-medium text-gray-900 mb-2">Unique Identifier Selection</h3>
+        <p className="text-sm text-gray-600 mb-4">Select a field from your supplier's data that will serve as the unique identifier for products. This field will be used to determine if a product is new or an update to an existing product.</p>
+
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+          <div className="flex items-center">
+            <svg className="w-5 h-5 text-blue-500 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <p className="text-sm font-medium text-blue-800">Why is this important?</p>
+              <p className="text-sm text-blue-700">The unique identifier ensures that when you re-import data, existing products are updated instead of creating duplicates.</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label htmlFor="uid_source_key" className="block text-sm font-medium text-gray-700 mb-2">
+              Select Unique Identifier Field *
+            </label>
+            <select
+              id="uid_source_key"
+              value={uidSourceKey}
+              onChange={(e) => setUidSourceKey(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              required
+            >
+              <option value="">Choose a field...</option>
+              {sourceFields.map((field) => (
+                <option key={field} value={field}>
+                  {field}
+                </option>
+              ))}
+            </select>
+            {uidSourceKey && (
+              <p className="mt-2 text-sm text-green-600">
+                ✓ Products will be identified using the "{uidSourceKey}" field
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+
+  const renderStep5 = () => (
     <div className="space-y-6">
       <BusyBanner />
       <div>
@@ -1026,8 +927,8 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
   return (
     <div className="space-y-6">
       {/* Progress Steps */}
-      <div className="flex items-center justify-center space-x-8">
-        {[1, 2, 3, 4].map((step) => (
+      <div className="flex items-center justify-center space-x-6">
+        {[1, 2, 3, 4, 5].map((step) => (
           <div key={step} className="flex items-center">
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
               currentStep >= step 
@@ -1036,20 +937,18 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
             }`}>
               {step}
             </div>
-            <div className={`w-16 h-1 mx-4 ${
-              step === 3 
-                ? importResults 
-                  ? 'bg-blue-600'  // Blue line to completion step when done
-                  : 'bg-gray-200'  // Gray line to completion step during wizard
-                : currentStep > step 
+            {step < 5 && (
+              <div className={`w-12 h-1 mx-3 ${
+                currentStep > step 
                   ? 'bg-blue-600' 
                   : 'bg-gray-200'
-            }`} />
+              }`} />
+            )}
           </div>
         ))}
         
         {/* Completion Step - Always visible */}
-        <div className="flex items-center">
+        <div className="flex items-center ml-3">
           <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
             importResults 
               ? 'bg-green-600 text-white'  // Green when completed
@@ -1073,7 +972,8 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
             {currentStep === 1 && renderStep1()}
             {currentStep === 2 && renderStep2()}
             {currentStep === 3 && renderStep3()}
-            {currentStep === 4 && !importing && !importResults && renderStep4()}
+            {currentStep === 4 && renderStep4()}
+            {currentStep === 5 && !importing && !importResults && renderStep5()}
             {(importing || importResults) && renderImportResults()}
       </div>
 
@@ -1099,20 +999,13 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
               </button>
             )}
 
-            {currentStep < 4 ? (
+            {currentStep < 5 ? (
               <button
                 onClick={() => {
-                  console.log('🚀 Next button clicked, current step:', currentStep)
-                  console.log('📊 Field mappings count:', fieldMappings.length)
-                  console.log('📋 Source fields count:', sourceFields.length)
-                  console.log('🔑 UID source key:', uidSourceKey)
-                  
                   if (currentStep === 1) handleStep1Submit()
                   else if (currentStep === 2) handleStep2Submit()
-                  else if (currentStep === 3) {
-                    // Category mapping step is optional, proceed to UID selection
-                    setCurrentStep(4)
-                  }
+                  else if (currentStep === 3) handleStep3Submit()
+                  else if (currentStep === 4) handleStep4Submit()
                 }}
                 disabled={
                   loading || 
@@ -1120,7 +1013,8 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
                   (supplierData.source_type === 'url' && !supplierData.endpoint_url.trim()) || 
                   // For upload: allow proceeding if fields are extracted (resume case)
                   (supplierData.source_type === 'upload' && !supplierData.uploaded_file && sourceFields.length === 0) ||
-                  (currentStep === 2 && fieldMappings.length === 0)
+                  (currentStep === 2 && fieldMappings.length === 0) ||
+                  (currentStep === 4 && !uidSourceKey)
                 }
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
@@ -1128,7 +1022,7 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
               </button>
             ) : (
               <button
-                onClick={handleStep4Submit}
+                onClick={handleStep5Submit}
                 disabled={importing}
                 className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
@@ -1144,6 +1038,7 @@ export default function SupplierWizard({ onSuccess, onCancel }: SupplierWizardPr
         isVisible={busy || loading || importing} 
         message="Working… Please wait" 
       />
+
 
     </div>
   )

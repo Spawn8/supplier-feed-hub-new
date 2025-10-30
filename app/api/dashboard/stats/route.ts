@@ -35,7 +35,7 @@ export async function GET() {
 
     // Get product stats
     const { data: products, error: productsError } = await supabase
-      .from('products_final')
+      .from('products_mapped')
       .select('id')
       .eq('workspace_id', workspaceId)
 

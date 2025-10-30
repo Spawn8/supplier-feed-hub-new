@@ -253,7 +253,7 @@ export async function generateExportPreview(
   
   // Get products with filters applied
   let query = supabase
-    .from('products_final')
+    .from('products_mapped')
     .select('*')
     .eq('workspace_id', profile.workspace_id)
     .limit(limit)
@@ -325,7 +325,7 @@ export async function generateFullExport(
   
   // Get all products with filters applied
   let query = supabase
-    .from('products_final')
+    .from('products_mapped')
     .select('*')
     .eq('workspace_id', profile.workspace_id)
   
@@ -489,7 +489,7 @@ function generateJSON(products: any[], profile: ExportProfile): string {
  * Generate XML export
  */
 function generateXML(products: any[], profile: ExportProfile): string {
-  const fieldsToInclude = profile.field_ordering.length > 0 
+  const fieldsToInclude = profile.field_ordering.length > 0
     ? profile.field_ordering 
     : profile.field_selection
   

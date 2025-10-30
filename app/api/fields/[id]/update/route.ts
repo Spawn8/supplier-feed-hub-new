@@ -18,7 +18,7 @@ export async function PUT(
 
     // Get workspace_id from the request body
     const body = await req.json()
-    const { workspace_id, name, key, datatype, description, is_required, is_unique } = body
+    const { workspace_id, name, key, datatype, description, is_required, is_unique, use_for_category_mapping } = body
 
     if (!workspace_id) {
       return NextResponse.json({ error: 'Workspace ID is required' }, { status: 400 })
@@ -41,7 +41,8 @@ export async function PUT(
       datatype,
       description,
       is_required,
-      is_unique
+      is_unique,
+      use_for_category_mapping
     })
 
     if (!result.success) {

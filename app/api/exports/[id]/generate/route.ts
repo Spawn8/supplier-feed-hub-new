@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
-import { generateExport } from '@/lib/exports'
+import { generateFullExport } from '@/lib/exports'
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const supabase = await createSupabaseServerClient()
@@ -20,7 +20,7 @@ export async function POST(
       return NextResponse.json({ error: 'No workspace selected' }, { status: 400 })
     }
 
-    const profileId = params.id
+    const { id: profileId } = await params
 
     // Get export profile
     const { data: profile, error: profileError } = await supabase
@@ -35,7 +35,7 @@ export async function POST(
     }
 
     // Generate export
-    const result = await generateExport(profile)
+    const result = await generateFullExport(profile)
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 400 })

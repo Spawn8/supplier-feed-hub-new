@@ -2,11 +2,14 @@ import { NextResponse } from 'next/server'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 import { getCurrentWorkspaceId } from '@/lib/workspace'
 import { getSupplier } from '@/lib/suppliers'
-import { runDeduplication } from '@/lib/deduplication'
 
+/**
+ * Simplified remap route - no longer needed since we don't store products_raw
+ * Field mappings are applied during ingestion, so just trigger a re-sync
+ */
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const supabase = await createSupabaseServerClient()
@@ -21,7 +24,7 @@ export async function POST(
       return NextResponse.json({ error: 'No workspace selected' }, { status: 400 })
     }
 
-    const supplierId = params.id
+    const { id: supplierId } = await params
 
     // Get supplier details
     const supplier = await getSupplier(supplierId)
@@ -34,47 +37,14 @@ export async function POST(
       return NextResponse.json({ error: 'Access denied' }, { status: 403 })
     }
 
-    // Clear existing mapped products for this supplier
-    await supabase
-      .from('products_mapped')
-      .delete()
-      .eq('workspace_id', workspaceId)
-      .eq('supplier_id', supplierId)
-
-    // Clear existing final products
-    await supabase
-      .from('products_final')
-      .delete()
-      .eq('workspace_id', workspaceId)
-
-    // Re-process raw products with current field mappings
-    const { data: rawProducts } = await supabase
-      .from('products_raw')
-      .select('*')
-      .eq('workspace_id', workspaceId)
-      .eq('supplier_id', supplierId)
-
-    if (rawProducts && rawProducts.length > 0) {
-      // This would need to be implemented to re-apply field mappings
-      // For now, we'll just run deduplication
-      const result = await runDeduplication(workspaceId)
-
-      if (!result.success) {
-        return NextResponse.json({ error: result.error }, { status: 400 })
-      }
-
-      return NextResponse.json({ 
-        success: true, 
-        stats: result.stats,
-        conflicts: result.conflicts
-      })
-    } else {
-      return NextResponse.json({ 
-        error: 'No raw products found for this supplier' 
-      }, { status: 400 })
-    }
+    // Since we don't store products_raw anymore, remapping requires a full re-sync
+    return NextResponse.json({ 
+      success: true, 
+      message: 'Field mappings are applied during re-sync. Please trigger a re-sync to update products.',
+      requiresSync: true
+    })
   } catch (error: any) {
-    console.error('Error remapping supplier data:', error)
+    console.error('Error in remap route:', error)
     return NextResponse.json({ 
       error: error.message || 'Internal server error' 
     }, { status: 500 })

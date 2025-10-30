@@ -5,7 +5,7 @@ import { getFieldMappings, saveFieldMappings } from '@/lib/fields'
 
 export async function GET(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const supabase = await createSupabaseServerClient()
@@ -27,7 +27,7 @@ export async function GET(
       return NextResponse.json({ error: 'Workspace ID is required' }, { status: 400 })
     }
 
-    const supplierId = params.id
+    const { id: supplierId } = await params
 
     // Get field mappings
     const mappings = await getFieldMappings(workspaceId, supplierId)
@@ -43,7 +43,7 @@ export async function GET(
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const supabase = await createSupabaseServerClient()
@@ -58,7 +58,7 @@ export async function POST(
       return NextResponse.json({ error: 'No workspace selected' }, { status: 400 })
     }
 
-    const supplierId = params.id
+    const { id: supplierId } = await params
     const body = await req.json()
     const { mappings } = body
 

@@ -4,7 +4,8 @@ import { getSupplier, getStoreSize } from '@/lib/memoryStore'
 
 // Field extraction functions (same as extract-fields API)
 function extractFieldsFromXML(content: string): string[] {
-  const fields = new Set<string>()
+  const fields: string[] = []
+  const seenFields = new Set<string>()
   
   try {
     // Look for product/item nodes first
@@ -12,7 +13,7 @@ function extractFieldsFromXML(content: string): string[] {
     const productMatches = content.match(productRegex)
     
     if (productMatches && productMatches.length > 0) {
-      // Extract fields from the first product/item
+      // Extract fields from the first product/item in order
       const firstProduct = productMatches[0]
       const fieldRegex = /<(\w+)(?:\s[^>]*)?>([^<]*)<\/\1>/g
       let match
@@ -21,11 +22,14 @@ function extractFieldsFromXML(content: string): string[] {
         const fieldName = match[1]
         // Skip common XML wrapper tags
         if (!['product', 'item', 'entry', 'products', 'items', 'entries'].includes(fieldName.toLowerCase())) {
-          fields.add(fieldName)
+          if (!seenFields.has(fieldName)) {
+            fields.push(fieldName)
+            seenFields.add(fieldName)
+          }
         }
       }
     } else {
-      // Fallback: extract all unique XML tags
+      // Fallback: extract all unique XML tags in order
       const tagRegex = /<(\w+)(?:\s[^>]*)?>([^<]*)<\/\1>/g
       let match
       
@@ -33,7 +37,10 @@ function extractFieldsFromXML(content: string): string[] {
         const fieldName = match[1]
         // Skip common XML wrapper tags and document structure
         if (!['xml', 'root', 'data', 'products', 'items', 'entries', 'catalog'].includes(fieldName.toLowerCase())) {
-          fields.add(fieldName)
+          if (!seenFields.has(fieldName)) {
+            fields.push(fieldName)
+            seenFields.add(fieldName)
+          }
         }
       }
     }
@@ -43,11 +50,15 @@ function extractFieldsFromXML(content: string): string[] {
     const simpleRegex = /<(\w+)[^>]*>/g
     let match
     while ((match = simpleRegex.exec(content)) !== null) {
-      fields.add(match[1])
+      const fieldName = match[1]
+      if (!seenFields.has(fieldName)) {
+        fields.push(fieldName)
+        seenFields.add(fieldName)
+      }
     }
   }
   
-  return Array.from(fields).sort()
+  return fields
 }
 
 function extractFieldsFromCSV(content: string): string[] {

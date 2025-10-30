@@ -14,6 +14,7 @@ export interface CustomField {
   description?: string
   is_required: boolean
   is_unique: boolean
+  is_visible: boolean
   sort_order: number
   created_at: string
   updated_at: string

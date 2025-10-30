@@ -6,6 +6,7 @@ import { streamArray } from 'stream-json/streamers/StreamArray'
 import { chain } from 'stream-chain'
 import { XMLParser } from 'fast-xml-parser'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { allocateProductUid } from './globalUidSystem'
 
 /** ========================================================================
  * Types & constants
@@ -174,18 +175,21 @@ async function loadFieldMappings(
   supabase: SupabaseClient,
   workspace_id: string,
   supplier_id: string
-): Promise<Map<string, string>> {
+): Promise<Map<string, string[]>> {
   const { data, error } = await supabase
     .from('field_mappings')
     .select('source_key, field_key')
     .eq('workspace_id', workspace_id)
     .eq('supplier_id', supplier_id)
   if (error) throw error
-  const map = new Map<string, string>()
+  const map = new Map<string, string[]>()
   for (const r of data || []) {
-    const src = safeLower(r?.source_key)
-    const dst = (r as any)?.field_key
-    if (src && dst) map.set(src, String(dst))
+    const src = safeLower((r as any)?.source_key)
+    const dst = String((r as any)?.field_key)
+    if (!src || !dst) continue
+    const arr = map.get(src) || []
+    arr.push(dst)
+    map.set(src, arr)
   }
   return map
 }
@@ -232,6 +236,8 @@ async function batchInsertByUID(
     source_file?: string
     cachedFields?: FieldDef[] | null
     mappings?: Map<string, string> | null // source_key(lower) -> field_key
+    uid_source_key?: string | null
+    seenSourceUids?: Set<string>
   }
 ) {
   if (!rows.length) return
@@ -259,13 +265,32 @@ async function batchInsertByUID(
   }))
 
   {
-    const { error } = await supabase
-      .from('products_raw')
-      .upsert(rawPayload, {
-        onConflict: 'workspace_id,supplier_id,uid',
-        ignoreDuplicates: false,
-      })
-    if (error) throw error
+    try {
+      const { error } = await supabase
+        .from('products_raw')
+        .upsert(rawPayload, {
+          onConflict: 'workspace_id,supplier_id,uid',
+          ignoreDuplicates: false,
+        })
+      if (error) {
+        // If the table doesn't exist in this environment, log and continue (mapped is source of truth)
+        const code = (error as any)?.code || ''
+        const msg = (error as any)?.message || ''
+        if (code === 'PGRST205' || /products_raw/i.test(msg)) {
+          console.warn('products_raw table not found; skipping raw upsert and continuing with mapped only')
+        } else {
+          throw error
+        }
+      }
+    } catch (e: any) {
+      const code = e?.code || ''
+      const msg = e?.message || ''
+      if (code === 'PGRST205' || /products_raw/i.test(msg)) {
+        console.warn('products_raw table not found; skipping raw upsert and continuing with mapped only')
+      } else {
+        throw e
+      }
+    }
   }
 
   // 2) Upsert into products_mapped
@@ -275,7 +300,63 @@ async function batchInsertByUID(
   const mappings =
     ctx.mappings ?? (await loadFieldMappings(supabase, workspace_id, supplier_id))
 
-  const mappedPayload = rows.map(({ uid, normalized }) => {
+  const uidKeyLower = (ctx.uid_source_key || '').toLowerCase()
+
+  // Resolve numeric global UID strictly by user-selected source UID (no fallbacks)
+  const resolvedRows: Array<{ numericUid: string; normalized: any; sourceUid: string } > = []
+  for (const { uid: sourceUidRaw, normalized } of rows) {
+    const sourceUid = String(sourceUidRaw)
+
+    // 1) Try to find existing by exact __source_uid match
+    const { data: existing, error: findErr } = await supabase
+      .from('products_mapped')
+      .select('uid')
+      .eq('workspace_id', workspace_id)
+      .eq('supplier_id', supplier_id)
+      .eq('fields->>__source_uid', sourceUid)
+      .limit(1)
+
+    let numericUid: string
+    if (!findErr && existing && existing.length > 0) {
+      numericUid = String((existing[0] as any).uid)
+    } else {
+      // 2) Not found: allocate a new global UID
+      const alloc = await allocateProductUid(supabase, workspace_id)
+      if (!alloc.success || !alloc.uid) {
+        throw new Error(alloc.error || 'Failed to allocate product UID')
+      }
+      numericUid = alloc.uid.toString()
+    }
+
+    resolvedRows.push({ numericUid, normalized, sourceUid })
+  }
+
+  // Detect duplicate Unique Identifier values across this ingestion (user selected field)
+  const dupCounts = new Map<string, number>()
+  const globalSeen = ctx.seenSourceUids || new Set<string>()
+  for (const r of resolvedRows) {
+    const v = r.sourceUid
+    dupCounts.set(v, (dupCounts.get(v) || 0) + 1)
+  }
+  const duplicates: Array<{ value: string; count: number }> = []
+  for (const [val, count] of dupCounts) {
+    if (count > 1 || globalSeen.has(val)) {
+      const total = count + (globalSeen.has(val) ? 1 : 0)
+      duplicates.push({ value: val, count: total })
+    }
+  }
+  if (duplicates.length > 0) {
+    const fieldName = uidKeyLower || 'unique identifier'
+    const sample = duplicates
+      .slice(0, 5)
+      .map(d => `${d.value} (${d.count})`)
+      .join(', ')
+    throw new Error(
+      `Duplicate Unique Identifier values found for "${fieldName}". Each product must have a unique value. Duplicates: ${sample}${duplicates.length > 5 ? ' …' : ''}`
+    )
+  }
+
+  const mappedPayload = resolvedRows.map(({ numericUid, normalized, sourceUid }) => {
     const fields: Record<string, any> = {}
 
     // Candidates from normalized
@@ -300,15 +381,17 @@ async function batchInsertByUID(
           )
         : {}
 
-    // 1) Apply explicit mappings
-    for (const [srcLower, dstFieldKey] of mappings.entries()) {
-      if (!srcLower) continue
-      const def = fieldByKey.get(dstFieldKey)
-      if (!def) continue
+    // 1) Apply explicit mappings (support one-to-many mappings)
+    for (const [srcLower, destKeys] of mappings.entries()) {
+      if (!srcLower || !Array.isArray(destKeys) || destKeys.length === 0) continue
       const rawVal = flatRaw[srcLower]
       const normVal = (normalizedFlat as any)[srcLower]
       const chosen = normVal ?? rawVal
-      fields[def.key] = coerceDatatype(chosen, def.datatype)
+      for (const dstFieldKey of destKeys) {
+        const def = fieldByKey.get(dstFieldKey)
+        if (!def) continue
+        fields[def.key] = coerceDatatype(chosen, def.datatype)
+      }
     }
 
     // 2) Fill remaining defined fields by best-effort
@@ -320,11 +403,24 @@ async function batchInsertByUID(
       fields[def.key] = coerceDatatype(val, def.datatype)
     }
 
+    // Always persist source UID for robust matching on future runs
+    fields['__source_uid'] = sourceUid
+
+    // Reflect the UID source to the mapped destination field only if explicitly mapped
+    if (uidKeyLower) {
+      const destFieldKeys = mappings.get(uidKeyLower) || []
+      for (const destFieldKey of destFieldKeys) {
+        if (fieldByKey.has(destFieldKey)) {
+          fields[destFieldKey] = coerceDatatype(sourceUid, fieldByKey.get(destFieldKey)!.datatype)
+        }
+      }
+    }
+
     return {
       workspace_id,
       supplier_id,
       ingestion_id,
-      uid,
+      uid: numericUid,
       fields,
       source_file: source_file || null,
     }
@@ -411,7 +507,7 @@ export async function ingestCSV(opts: {
             batchInsertByUID(
               supabase,
               batch.splice(0),
-              { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings }
+              { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings, uid_source_key, seenSourceUids }
             )
               .then(() => parser.resume())
               .catch(reject)
@@ -435,7 +531,7 @@ export async function ingestCSV(opts: {
           await batchInsertByUID(
             supabase,
             batch,
-            { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings }
+            { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings, uid_source_key, seenSourceUids }
           )
         resolve(stats)
       } catch (e) {
@@ -479,6 +575,7 @@ export async function ingestJSON(opts: {
   const batch: Array<{ uid: string; normalized: any }> = []
   const cachedFields = await loadFieldDefs(supabase, workspace_id)
   const mappings = await loadFieldMappings(supabase, workspace_id, supplier_id)
+  const seenSourceUids = new Set<string>()
 
   return new Promise<IngestStats>((resolve, reject) => {
     pipeline.on('data', async (data: any) => {
@@ -510,7 +607,7 @@ export async function ingestJSON(opts: {
           batchInsertByUID(
             supabase,
             batch.splice(0),
-            { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings }
+            { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings, uid_source_key, seenSourceUids }
           )
             .then(() => (pipeline as any).resume?.())
             .catch(reject)
@@ -533,7 +630,7 @@ export async function ingestJSON(opts: {
           await batchInsertByUID(
             supabase,
             batch,
-            { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings }
+            { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings, uid_source_key, seenSourceUids }
           )
         resolve(stats)
       } catch (e) {
@@ -668,7 +765,7 @@ export async function ingestXMLBuffer(opts: {
         await batchInsertByUID(
           supabase,
           batch.splice(0),
-          { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings }
+          { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings, uid_source_key }
         )
       }
       stats.ok++
@@ -687,7 +784,7 @@ export async function ingestXMLBuffer(opts: {
     await batchInsertByUID(
       supabase,
       batch,
-      { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings }
+      { workspace_id, supplier_id, ingestion_id, source_file, cachedFields, mappings, uid_source_key }
     )
 
   return stats

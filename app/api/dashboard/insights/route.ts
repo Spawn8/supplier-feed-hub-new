@@ -45,10 +45,10 @@ export async function GET() {
     if (suppliers && suppliers.length) {
       const counts = await Promise.all(suppliers.map(async (s) => {
         const { count } = await supabase
-          .from('products_final')
+          .from('products_mapped')
           .select('*', { count: 'exact', head: true })
           .eq('workspace_id', workspaceId)
-          .eq('winning_supplier_id', s.id)
+          .eq('supplier_id', s.id)
         return { id: s.id, name: s.name, count: count || 0, last_sync_completed_at: s.last_sync_completed_at }
       }))
       counts.sort((a, b) => b.count - a.count)
@@ -73,9 +73,9 @@ export async function GET() {
       .from('suppliers').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).lt('creation_completed_at', sevenDaysAgo.toISOString())
 
     const { count: productsNow } = await supabase
-      .from('products_final').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId)
+      .from('products_mapped').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId)
     const { count: productsThen } = await supabase
-      .from('products_final').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).lt('created_at', sevenDaysAgo.toISOString())
+      .from('products_mapped').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).lt('created_at', sevenDaysAgo.toISOString())
 
     const { count: exportsNow } = await supabase
       .from('export_history').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId)

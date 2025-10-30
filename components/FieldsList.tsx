@@ -12,6 +12,8 @@ interface CustomField {
   description?: string
   is_required: boolean
   is_unique: boolean
+  is_visible: boolean
+  use_for_category_mapping?: boolean
   sort_order: number
   created_at: string
   updated_at: string
@@ -125,6 +127,7 @@ export default function FieldsList({ fields, onFieldSelect, onFieldUpdated, onCr
           onEdit={(field) => setEditingField(field)}
           onDelete={(fieldId) => handleDeleteSuccess(fieldId)}
           onSelect={onFieldSelect}
+          onFieldUpdated={onFieldUpdated}
         />
       )}
 

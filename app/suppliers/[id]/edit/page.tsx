@@ -5,6 +5,7 @@ import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { createSupabaseBrowserClient } from '@/lib/supabaseClient'
 import CategoryMappingInterface from '@/components/CategoryMappingInterface'
 import { useWorkspace } from '@/lib/workspaceContext'
+import UniversalFieldMapping from '@/components/UniversalFieldMapping'
 
 interface Supplier {
   id: string
@@ -36,7 +37,6 @@ export default function EditSupplierPage() {
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [mappingLoading, setMappingLoading] = useState(false)
-  const [mappingLoaded, setMappingLoaded] = useState(false)
   
   const router = useRouter()
   const params = useParams()
@@ -81,6 +81,8 @@ export default function EditSupplierPage() {
   const [sourceFields, setSourceFields] = useState<string[]>([])
   const [fieldMappings, setFieldMappings] = useState<FieldMapping[]>([])
   const [originalMappings, setOriginalMappings] = useState<FieldMapping[]>([])
+  const [showCreateFieldModal, setShowCreateFieldModal] = useState(false)
+  const [editingField, setEditingField] = useState<any>(null)
 
   useEffect(() => {
     checkUser()
@@ -149,14 +151,13 @@ export default function EditSupplierPage() {
   }
 
   const loadFieldMappingData = async () => {
-    if (!activeWorkspaceId || mappingLoaded) return
+    if (!activeWorkspaceId) return
     try {
       setMappingLoading(true)
-      // Fetch data needed for field mapping tab only when opened
+      // Always fetch fresh data when switching to mapping tab
       await fetchCustomFields()
       await fetchExistingMappings()
       await fetchSourceFields(supplier)
-      setMappingLoaded(true)
     } catch (e) {
       // Errors are handled inside called functions
     } finally {
@@ -164,12 +165,26 @@ export default function EditSupplierPage() {
     }
   }
 
-  // Load mapping data when switching to mapping tab
+  // Load mapping data when switching to mapping tab - always fetch fresh data
   useEffect(() => {
     if (activeTab === 'mapping') {
       loadFieldMappingData()
     }
   }, [activeTab, activeWorkspaceId, supplierId])
+
+  // Load source fields when switching to category mapping tab
+  useEffect(() => {
+    if (activeTab === 'category-mapping' && supplier && activeWorkspaceId) {
+      fetchSourceFields(supplier)
+    }
+  }, [activeTab, activeWorkspaceId, supplier])
+
+  // Also load mapping data when component mounts and we have the required data
+  useEffect(() => {
+    if (supplier && activeWorkspaceId && activeTab === 'mapping') {
+      loadFieldMappingData()
+    }
+  }, [supplier, activeWorkspaceId, activeTab])
 
   // Sync tab state with search params to support deep-links and back/forward
   useEffect(() => {
@@ -186,11 +201,6 @@ export default function EditSupplierPage() {
   }, [router, searchParams, stateToTabParam])
 
   // Preload field mapping data once supplier and workspace are known
-  useEffect(() => {
-    if (supplier && activeWorkspaceId && !mappingLoaded && !mappingLoading) {
-      loadFieldMappingData()
-    }
-  }, [supplier, activeWorkspaceId])
 
   const fetchCustomFields = async () => {
     try {
@@ -204,21 +214,40 @@ export default function EditSupplierPage() {
     }
   }
 
+  const handleFieldCreated = (newField: any) => {
+    // Add the new field to the end of the custom fields list
+    setCustomFields(prev => [...prev, newField])
+    setShowCreateFieldModal(false)
+  }
+
+  const handleFieldUpdated = (updatedField: any) => {
+    // Update the field in the custom fields list
+    setCustomFields(prev => prev.map(field => 
+      field.id === updatedField.id ? updatedField : field
+    ))
+    setEditingField(null)
+  }
+
   const fetchSourceFields = async (supplierData: any) => {
     if (!activeWorkspaceId) return
     
     try {
+      console.log('🔍 Fetching source fields for supplier:', supplierId)
       const response = await fetch(`/api/suppliers/${supplierId}/sample-keys?workspace_id=${activeWorkspaceId}`)
       const data = await response.json()
       
+      console.log('📋 Source fields API response:', data)
+      
       if (response.ok && data.keys && Array.isArray(data.keys)) {
+        console.log('✅ Setting source fields:', data.keys)
         setSourceFields(data.keys)
       } else {
+        console.log('⚠️ No keys in response, trying fallback')
         // Try fallback: get fields from raw data
         await fetchSourceFieldsFromRawData()
       }
     } catch (err) {
-      console.error('Error fetching source fields:', err)
+      console.error('❌ Error fetching source fields:', err)
       await fetchSourceFieldsFromRawData()
     }
   }
@@ -231,9 +260,18 @@ export default function EditSupplierPage() {
       if (response.ok && data.supplier?.products?.length > 0) {
         const firstProduct = data.supplier.products[0]
         const rawData = firstProduct.raw || firstProduct
-        const fields = Object.keys(rawData).filter(key => 
-          !['id', 'uid', 'created_at', 'updated_at'].includes(key)
-        ).sort()
+        
+        // Use preserved field order if available, otherwise fall back to Object.keys
+        let fields: string[]
+        if (rawData._fieldOrder) {
+          fields = rawData._fieldOrder.filter((key: string) => 
+            !['id', 'uid', 'created_at', 'updated_at', '_fieldOrder'].includes(key)
+          )
+        } else {
+          fields = Object.keys(rawData).filter(key => 
+            !['id', 'uid', 'created_at', 'updated_at'].includes(key)
+          )
+        }
         
         if (fields.length > 0) {
           setSourceFields(fields)
@@ -258,15 +296,22 @@ export default function EditSupplierPage() {
           
           if (!isUUID) {
             const matchingField = customFields.find(f => f.key === mapping.field_key)
-            custom_field_id = matchingField ? matchingField.id : mapping.field_key
+            if (matchingField) {
+              custom_field_id = matchingField.id
+            } else {
+              // Skip mappings with invalid field keys that don't match any custom field
+              console.warn(`Skipping mapping for unknown field key: ${mapping.field_key}`)
+              return null
+            }
           }
           
           return {
             custom_field_id: custom_field_id,
             source_field: mapping.source_key || mapping.source_field
           }
-        })
+        }).filter(Boolean) // Remove null entries
         
+        console.log('📥 Loaded mappings from database:', transformedMappings)
         setFieldMappings(transformedMappings)
         setOriginalMappings([...transformedMappings])
       }
@@ -312,25 +357,6 @@ export default function EditSupplierPage() {
     }
   }
 
-  const handleFieldMapping = (customFieldId: string, sourceField: string) => {
-    setFieldMappings(prev => {
-      const existing = prev.find(m => m.custom_field_id === customFieldId)
-      if (existing) {
-        if (sourceField === '') {
-          return prev.filter(m => m.custom_field_id !== customFieldId)
-        } else {
-          return prev.map(m => 
-            m.custom_field_id === customFieldId 
-              ? { ...m, source_field: sourceField }
-              : m
-          )
-        }
-      } else if (sourceField !== '') {
-        return [...prev, { custom_field_id: customFieldId, source_field: sourceField }]
-      }
-      return prev
-    })
-  }
 
   const handleMappingsSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -339,6 +365,7 @@ export default function EditSupplierPage() {
     try {
       setSaving(true)
       setError(null)
+      setSuccessMessage('Saving mappings...')
 
       const response = await fetch('/api/suppliers/field-mappings', {
         method: 'POST',
@@ -358,21 +385,16 @@ export default function EditSupplierPage() {
         throw new Error(data.error || 'Failed to save mappings')
       }
 
-      // Check if mappings have changed from original
-      const mappingsChanged = JSON.stringify(fieldMappings) !== JSON.stringify(originalMappings)
-      
-      if (mappingsChanged) {
-        // Update supplier status to indicate sync is needed
-        await updateSupplierSyncStatus(supplierId, 'sync_needed')
-      }
-
-      setSuccessMessage('Field mappings updated successfully!')
+      // Success - just saved the mappings
+      console.log('✅ Mappings saved successfully:', fieldMappings)
+      setSuccessMessage('Field mappings saved! Trigger a re-sync to apply changes to products.')
       setOriginalMappings([...fieldMappings])
       
-      setTimeout(() => setSuccessMessage(null), 3000)
+      setTimeout(() => setSuccessMessage(null), 5000)
     } catch (err) {
       console.error('Error saving mappings:', err)
       setError(err instanceof Error ? err.message : 'Failed to save mappings')
+      setSuccessMessage(null)
     } finally {
       setSaving(false)
     }
@@ -520,9 +542,9 @@ export default function EditSupplierPage() {
         )}
 
         {/* Tab Content */}
-        <div className="bg-white shadow rounded-lg">
+        <div>
           {activeTab === 'details' && (
-            <div className="p-6">
+            <div className="bg-white shadow rounded-lg p-6">
               <form onSubmit={handleDetailsSubmit} className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
@@ -681,167 +703,60 @@ export default function EditSupplierPage() {
             </div>
           )}
 
-          <div className={`p-6 ${activeTab === 'mapping' ? '' : 'hidden'}`}>
+          <div className={`${activeTab === 'mapping' ? '' : 'hidden'}`}>
             {mappingLoading && (
               <div className="flex items-center justify-center py-12">
                 <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
               </div>
             )}
             {!mappingLoading && (
-            <form onSubmit={handleMappingsSubmit} className="space-y-6">
-              <div>
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Field Mapping</h3>
-                <p className="text-sm text-gray-600 mb-6">
-                  Map your custom fields to source fields from the supplier feed.
-                </p>
-              </div>
-              
-              {customFields.length > 0 ? (
-                <div className="border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
-                    <div className="grid grid-cols-12 gap-4 text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      <div className="col-span-4">Custom Field</div>
-                      <div className="col-span-1"></div>
-                      <div className="col-span-4">Source Field</div>
-                      <div className="col-span-2">Type</div>
-                      <div className="col-span-1">Required</div>
-                    </div>
-                  </div>
-                  
-                  <div className="divide-y divide-gray-200">
-                    {customFields.map((field) => (
-                      <div key={field.id} className="px-4 py-3 hover:bg-gray-50">
-                        <div className="grid grid-cols-12 gap-4 items-center">
-                          <div className="col-span-4">
-                            <div className="font-medium text-sm text-gray-900">{field.name}</div>
-                            <div className="text-xs text-gray-500">{field.description || 'No description'}</div>
-                          </div>
-                          
-                          <div className="col-span-1 text-center">
-                            <svg className="w-4 h-4 text-gray-400 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                            </svg>
-                          </div>
-                          
-                          <div className="col-span-4">
-                            <select
-                              value={fieldMappings.find(m => m.custom_field_id === field.id)?.source_field || ''}
-                              onChange={(e) => handleFieldMapping(field.id, e.target.value)}
-                              className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            >
-                              <option value="">Select source field</option>
-                              {sourceFields.map((sourceField) => (
-                                <option key={sourceField} value={sourceField}>
-                                  {sourceField}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          
-                          <div className="col-span-2">
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                              {field.datatype}
-                            </span>
-                          </div>
-                          
-                          <div className="col-span-1 text-center">
-                            {field.is_required && (
-                              <span className="text-red-500 text-xs">*</span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center py-8">
-                  <p className="text-gray-500">No custom fields found. Create some custom fields first.</p>
+              <>
+                {/* Universal Field Mapping Component */}
+                <UniversalFieldMapping
+                  customFields={customFields}
+                  sourceFields={sourceFields}
+                  fieldMappings={fieldMappings}
+                  supplierId={supplierId}
+                  workspaceId={activeWorkspaceId!}
+                  onMappingsChange={setFieldMappings}
+                  onFieldCreated={handleFieldCreated}
+                  onFieldUpdated={handleFieldUpdated}
+                  showAddNewField={true}
+                  showEditFields={true}
+                  showActionButtons={false}
+                />
+                
+                <div className="mt-6 flex justify-end">
                   <button
-                    type="button"
-                    onClick={() => router.push('/fields')}
-                    className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                    onClick={handleMappingsSubmit}
+                    disabled={saving}
+                    className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    Manage Custom Fields
+                    {saving ? 'Saving...' : 'Save Mappings'}
                   </button>
                 </div>
-              )}
-              
-              {/* Available Source Fields */}
-              <div className="mt-6">
-                <h4 className="text-sm font-medium text-gray-900 mb-3">Available Source Fields</h4>
-                {sourceFields.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {sourceFields.map((field) => {
-                      const isMapped = fieldMappings.some(m => m.source_field === field)
-                      return (
-                        <span
-                          key={field}
-                          className={`inline-flex items-center px-3 py-1 rounded-full text-sm ${
-                            isMapped 
-                              ? 'bg-green-100 text-green-800' 
-                              : 'bg-gray-100 text-gray-800'
-                          }`}
-                        >
-                          {field}
-                          {isMapped && (
-                            <svg className="w-3 h-3 ml-1" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          )}
-                        </span>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                    <p className="text-sm text-yellow-800">
-                      No source fields available. Make sure the supplier has data or is accessible.
-                    </p>
-                  </div>
-                )}
-              </div>
-              
-              {/* Mapping Summary */}
-              <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="text-sm font-medium text-blue-900">Total Custom Fields</div>
-                  <div className="text-2xl font-bold text-blue-900">{customFields.length}</div>
-                </div>
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="text-sm font-medium text-green-900">Mapped Fields</div>
-                  <div className="text-2xl font-bold text-green-900">{fieldMappings.length}</div>
-                </div>
-                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                  <div className="text-sm font-medium text-gray-900">Available Source Fields</div>
-                  <div className="text-2xl font-bold text-gray-900">{sourceFields.length}</div>
-                </div>
-              </div>
-              
-              <div className="flex justify-end">
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {saving ? 'Saving...' : 'Save Mappings'}
-                </button>
-              </div>
-            </form>
+              </>
             )}
           </div>
-          <div className={`p-6 ${activeTab === 'category-mapping' ? '' : 'hidden'}`}>
-            {supplier && (
-              <CategoryMappingInterface
-                supplierId={supplier.id}
-                supplierName={supplier.name}
-                inline
-                onMappingCreated={() => {}}
-              />
-            )}
+          <div className={`${activeTab === 'category-mapping' ? '' : 'hidden'}`}>
+            <div className="bg-white shadow rounded-lg p-6">
+              {supplier && (
+                <CategoryMappingInterface
+                  supplierId={supplier.id}
+                  supplierName={supplier.name}
+                  inline
+                  sourceFields={sourceFields}
+                  onMappingCreated={(mapping) => {
+                    console.log('Category mapping created:', mapping)
+                    // The CategoryMappingInterface handles its own state refresh
+                  }}
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>
+
     </div>
   )
 }

@@ -241,6 +241,7 @@ function parseXMLProducts(xmlContent: string): any[] {
     if (productMatches) {
       productMatches.forEach((productXML, index) => {
         const product: any = {}
+        const fieldOrder: string[] = []
         
         // Extract all field values
         const fieldRegex = /<(\w+)(?:\s[^>]*)?>([^<]*)<\/\1>/g
@@ -253,9 +254,12 @@ function parseXMLProducts(xmlContent: string): any[] {
           // Skip wrapper tags
           if (!['product', 'item', 'entry'].includes(fieldName.toLowerCase())) {
             product[fieldName] = fieldValue
+            fieldOrder.push(fieldName)
           }
         }
         
+        // Store field order for preserving XML order
+        product._fieldOrder = fieldOrder
         products.push(product)
       })
     }

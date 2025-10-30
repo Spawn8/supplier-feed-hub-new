@@ -67,8 +67,25 @@ export async function POST(req: Request) {
 
     // Insert new mappings
     if (mappings.length > 0) {
+      // Filter out mappings with invalid custom_field_id (must be valid UUIDs)
+      const validMappings = mappings.filter((mapping: any) => {
+        const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mapping.custom_field_id)
+        if (!isValidUUID) {
+          console.warn(`Skipping mapping with invalid custom_field_id: ${mapping.custom_field_id}`)
+        }
+        return isValidUUID
+      })
+
+      if (validMappings.length === 0) {
+        console.log('⚠️ No valid mappings to insert')
+        return NextResponse.json({ 
+          success: true,
+          message: 'No valid mappings to save'
+        })
+      }
+
       // Translate custom_field_id (UUID) -> field key string (e.g., 'ean')
-      const ids = Array.from(new Set(mappings.map((m: any) => m.custom_field_id).filter(Boolean)))
+      const ids = Array.from(new Set(validMappings.map((m: any) => m.custom_field_id).filter(Boolean)))
       let idToKey: Record<string, string> = {}
       if (ids.length > 0) {
         const { data: cf, error: cfErr } = await supabase
@@ -83,14 +100,17 @@ export async function POST(req: Request) {
         }
       }
 
-      const mappingsToInsert = mappings.map((mapping: any) => ({
+      // Allow multiple custom fields to map to the same source field
+      const mappingsToInsert = validMappings.map((mapping: any) => ({
         workspace_id: workspace_id,
         supplier_id: supplier_id,
-        field_key: idToKey[mapping.custom_field_id] || mapping.custom_field_id, // store key when possible
+        field_key: idToKey[mapping.custom_field_id] || mapping.custom_field_id,
         source_key: String(mapping.source_field || '').toLowerCase(),
         transform_type: 'direct',
         transform_config: {}
       }))
+
+      console.log('💾 Mappings to insert:', mappingsToInsert)
 
       const { data: insertedMappings, error: insertError } = await supabase
         .from('field_mappings')

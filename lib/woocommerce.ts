@@ -353,7 +353,7 @@ export async function syncProductsToWooCommerce(
   
   // Get products to sync
   let query = supabase
-    .from('products_final')
+    .from('products_mapped')
     .select('*')
     .eq('workspace_id', workspaceId)
   

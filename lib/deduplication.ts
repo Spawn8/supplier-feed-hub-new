@@ -1,4 +1,6 @@
 // lib/deduplication.ts
+// DEPRECATED: No longer used since we removed products_final table
+// products_mapped is now the single source of truth
 import { createSupabaseServerClient } from './supabaseServer'
 import { logActivity } from './auth'
 
@@ -223,10 +225,6 @@ export async function runDeduplication(
     rules = rules.filter(rule => rule.is_active)
   }
   
-  if (rules.length === 0) {
-    return { success: false, error: 'No active deduplication rules found' }
-  }
-  
   // Get all mapped products for the workspace
   const { data: mappedProducts, error: productsError } = await supabase
     .from('products_mapped')
@@ -245,10 +243,63 @@ export async function runDeduplication(
   }
   
   if (!mappedProducts || mappedProducts.length === 0) {
-    return { success: false, error: 'No mapped products found' }
+    console.log('⚠️ No mapped products found')
+    return { success: true, stats: { total_products: 0, unique_products: 0, conflicts_resolved: 0, duplicates_removed: 0, coverage_percentage: 0 }, conflicts: [] }
   }
   
-  // Group products by match key
+  // If no deduplication rules, just copy all products to final (no deduplication)
+  if (rules.length === 0) {
+    console.log('⚠️ No deduplication rules found, copying all products to final without deduplication')
+    
+    // Clear existing final products
+    await supabase
+      .from('products_final')
+      .delete()
+      .eq('workspace_id', workspaceId)
+    
+    // Copy all mapped products to final
+    const finalProductData = mappedProducts.map(product => ({
+      workspace_id: workspaceId,
+      uid: product.uid, // Use the product's UID directly
+      title: product.fields.title || 'Unknown Product',
+      description: product.fields.description,
+      sku: product.fields.sku,
+      ean: product.fields.ean,
+      price: product.fields.price,
+      currency: product.fields.currency,
+      quantity: product.fields.quantity || 0,
+      in_stock: (product.fields.quantity || 0) > 0,
+      category_id: null, // Will be set by category mapping
+      brand: product.fields.brand,
+      image_url: product.fields.image_url,
+      images: product.fields.images || [],
+      attributes: product.fields.attributes || {},
+      winning_supplier_id: product.supplier_id,
+      winning_reason: 'no_deduplication',
+      other_suppliers: []
+    }))
+    
+    const { error: insertError } = await supabase
+      .from('products_final')
+      .insert(finalProductData)
+    
+    if (insertError) {
+      console.error('Error inserting final products:', insertError)
+      return { success: false, error: insertError.message }
+    }
+    
+    const stats: DeduplicationStats = {
+      total_products: mappedProducts.length,
+      unique_products: mappedProducts.length,
+      conflicts_resolved: 0,
+      duplicates_removed: 0,
+      coverage_percentage: 100
+    }
+    
+    return { success: true, stats, conflicts: [] }
+  }
+  
+  // Group products by match key (when rules exist)
   const productGroups = new Map<string, any[]>()
   const conflicts: ProductConflict[] = []
   

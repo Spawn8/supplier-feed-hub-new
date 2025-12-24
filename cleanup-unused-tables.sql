@@ -167,3 +167,7 @@ SELECT * FROM workspace_dashboard LIMIT 1;
 -- The system now uses products_mapped as the single source of truth.
 -- All exports, WooCommerce sync, and product queries use products_mapped.
 
+
+
+
+

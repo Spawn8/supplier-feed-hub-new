@@ -22,10 +22,10 @@ export async function POST(
 
     const { id: profileId } = await params
 
-    // Get export profile
+    // Verify profile exists and belongs to workspace
     const { data: profile, error: profileError } = await supabase
       .from('export_profiles')
-      .select('*')
+      .select('id')
       .eq('id', profileId)
       .eq('workspace_id', workspaceId)
       .single()
@@ -34,8 +34,8 @@ export async function POST(
       return NextResponse.json({ error: 'Export profile not found' }, { status: 404 })
     }
 
-    // Generate export
-    const result = await generateFullExport(profile)
+    // Generate export - pass profileId, not profile object
+    const result = await generateFullExport(profileId)
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 400 })

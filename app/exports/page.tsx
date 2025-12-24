@@ -34,7 +34,7 @@ export default function ExportsPage() {
   }
 
   const handleExportSelect = (exportProfile: any) => {
-    // TODO: Navigate to export profile edit page
+    // Export profile selection is handled within ExportsList component
     console.log('Selected export profile:', exportProfile)
   }
 

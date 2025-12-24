@@ -4,7 +4,7 @@ import { logActivity } from './auth'
 
 export type ExportFormat = 'csv' | 'json' | 'xml'
 export type ExportPlatform = 'woocommerce' | 'shopify' | 'magento' | 'custom'
-export type DeliveryMethod = 'download' | 'webhook' | 's3'
+export type DeliveryMethod = 'download' | 'feed' | 'webhook' | 's3'
 
 export interface ExportProfile {
   id: string
@@ -283,7 +283,9 @@ export async function generateExportPreview(
   }
   
   // Transform products based on field selection and ordering
+  // Product data is in the 'fields' JSONB column
   const transformedData = products?.map(product => {
+    const productFields = product.fields || {}
     const result: Record<string, any> = {}
     
     // Apply field selection and ordering
@@ -293,7 +295,7 @@ export async function generateExportPreview(
     
     for (const fieldKey of fieldsToInclude) {
       if (profile.field_selection.includes(fieldKey)) {
-        result[fieldKey] = product[fieldKey] || product.attributes?.[fieldKey]
+        result[fieldKey] = productFields[fieldKey] || null
       }
     }
     
@@ -308,7 +310,7 @@ export async function generateExportPreview(
  */
 export async function generateFullExport(
   profileId: string
-): Promise<{ success: boolean; exportId?: string; error?: string }> {
+): Promise<{ success: boolean; exportId?: string; downloadUrl?: string; error?: string }> {
   const supabase = await createSupabaseServerClient()
   const { data: { user } } = await supabase.auth.getUser()
   
@@ -382,7 +384,7 @@ export async function generateFullExport(
   }
   
   // Upload to storage
-  const storagePath = `exports/${profile.workspace_id}/${filename}`
+  const storagePath = `${profile.workspace_id}/${filename}`
   const { error: uploadError } = await supabase.storage
     .from('exports')
     .upload(storagePath, exportData, {
@@ -431,7 +433,11 @@ export async function generateFullExport(
     generation_time_ms: generationTime
   })
   
-  return { success: true, exportId: exportHistory.id }
+  return { 
+    success: true, 
+    exportId: exportHistory.id,
+    downloadUrl: signedUrlData?.signedUrl
+  }
 }
 
 /**
@@ -445,10 +451,11 @@ function generateCSV(products: any[], profile: ExportProfile): string {
   // CSV header
   const headers = fieldsToInclude.join(',')
   
-  // CSV rows
+  // CSV rows - product data is in the 'fields' JSONB column
   const rows = products.map(product => {
+    const productFields = product.fields || {}
     const values = fieldsToInclude.map(fieldKey => {
-      const value = product[fieldKey] || product.attributes?.[fieldKey] || ''
+      const value = productFields[fieldKey] || ''
       // Escape CSV values
       const stringValue = String(value)
       if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
@@ -470,12 +477,14 @@ function generateJSON(products: any[], profile: ExportProfile): string {
     ? profile.field_ordering 
     : profile.field_selection
   
+  // Product data is in the 'fields' JSONB column
   const transformedProducts = products.map(product => {
+    const productFields = product.fields || {}
     const result: Record<string, any> = {}
     
     for (const fieldKey of fieldsToInclude) {
       if (profile.field_selection.includes(fieldKey)) {
-        result[fieldKey] = product[fieldKey] || product.attributes?.[fieldKey]
+        result[fieldKey] = productFields[fieldKey] || null
       }
     }
     
@@ -496,12 +505,14 @@ function generateXML(products: any[], profile: ExportProfile): string {
   let xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
   xml += '<products>\n'
   
+  // Product data is in the 'fields' JSONB column
   for (const product of products) {
+    const productFields = product.fields || {}
     xml += '  <product>\n'
     
     for (const fieldKey of fieldsToInclude) {
       if (profile.field_selection.includes(fieldKey)) {
-        const value = product[fieldKey] || product.attributes?.[fieldKey] || ''
+        const value = productFields[fieldKey] || ''
         const escapedValue = String(value).replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;')
